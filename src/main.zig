@@ -272,3 +272,28 @@ pub fn main(init: std.process.Init) !void {
         try stdout.flush();
     }
 }
+
+test "snake change direction to left from down" {
+    const gpa = std.testing.allocator;
+    var snake = try Snake.init(gpa);
+    defer snake.deinit(gpa);
+    snake.setDirection(107);
+
+    try std.testing.expectEqual(Direction.down, snake.direction);
+}
+
+test "snake next method" {
+    const gpa = std.testing.allocator;
+    var snake = try Snake.init(gpa);
+    defer snake.deinit(gpa);
+    snake.body.items[0] = Position{
+        .x = 0,
+        .y = 0,
+    };
+    snake.setDirection(106);
+    // test snake.next() returns null when snake will hit
+    try std.testing.expectEqual(snake.next(), null);
+    snake.setDirection(105);
+    // test snake.next() returns null when snake will hit
+    try std.testing.expectEqual(snake.next(), null);
+}
