@@ -1,6 +1,16 @@
 const std = @import("std");
 
-const Game = struct {
+pub const GRID_WIDTH = 64;
+pub const GRID_HEIGHT = 32;
+
+pub fn grid_center() Position {
+    const x = GRID_WIDTH / 2;
+    const y = GRID_HEIGHT / 2;
+
+    return Position{ .x = x, .y = y };
+}
+
+pub const Game = struct {
     score: u8,
     state: GameState,
 };
@@ -12,12 +22,12 @@ const GameState = enum {
     over,
 };
 
-const Food = struct {
+pub const Food = struct {
     pos: Position,
 
     pub fn new(rand: std.Random) Food {
-        const x = rand.intRangeLessThan(u8, 0, Grid.WIDTH);
-        const y = rand.intRangeLessThan(u8, 0, Grid.HEIGHT);
+        const x = rand.intRangeLessThan(u8, 0, GRID_WIDTH);
+        const y = rand.intRangeLessThan(u8, 0, GRID_HEIGHT);
         return Food{ .pos = Position{ .x = x, .y = y } };
     }
 };
@@ -34,48 +44,13 @@ const Position = struct {
     y: u8,
 };
 
-const Cell = enum {
-    snake,
-    food,
-    empty,
-};
-
-const Grid = struct {
-    cells: [HEIGHT][WIDTH]Cell,
-
-    const WIDTH = 64;
-    const HEIGHT = 32;
-
-    pub fn init() Grid {
-        const empty_row = [_]Cell{.empty} ** WIDTH;
-        const cells = [_][WIDTH]Cell{empty_row} ** HEIGHT;
-        return .{ .cells = cells };
-    }
-
-    pub fn clear(self: *Grid) void {
-        // could also do self.cells = Grid.init().cells;
-        for (&self.cells) |*row| {
-            for (row) |*col| {
-                col.* = .empty;
-            }
-        }
-    }
-
-    pub fn center() Position {
-        const x = WIDTH / 2;
-        const y = HEIGHT / 2;
-
-        return Position{ .x = x, .y = y };
-    }
-};
-
-const Snake = struct {
+pub const Snake = struct {
     body: std.ArrayList(Position),
     direction: Direction,
 
     pub fn init(gpa: std.mem.Allocator) !Snake {
         var body = std.ArrayList(Position).empty;
-        const center = Grid.center();
+        const center = grid_center();
 
         try body.append(gpa, center);
 
@@ -95,9 +70,9 @@ const Snake = struct {
         const head = self.body.items[0];
         const next_pos: ?Position = switch (self.direction) {
             .up => if (head.y == 0) null else Position{ .x = head.x, .y = head.y - 1 },
-            .down => if (head.y == Grid.HEIGHT - 1) null else Position{ .x = head.x, .y = head.y + 1 },
+            .down => if (head.y == GRID_HEIGHT - 1) null else Position{ .x = head.x, .y = head.y + 1 },
             .left => if (head.x == 0) null else Position{ .x = head.x - 1, .y = head.y },
-            .right => if (head.x == Grid.WIDTH - 1) null else Position{ .x = head.x + 1, .y = head.y },
+            .right => if (head.x == GRID_WIDTH - 1) null else Position{ .x = head.x + 1, .y = head.y },
         };
 
         return next_pos;
@@ -150,7 +125,7 @@ const Snake = struct {
 // Characterization tests for the simulation core.
 //
 // These pin the *current* behavior of the platform-agnostic model
-// (Snake.next/step/contains, setDirection, Grid.center/clear) before the
+// (Snake.next/step/contains, setDirection, grid_center/clear) before the
 // planned WASM extraction refactor moves this logic. They intentionally drive
 // the model directly (setting `direction` / `body` instead of going through
 // the terminal loop) so they need no TTY. Run with `zig test src/main.zig`
@@ -171,7 +146,7 @@ test "next returns null at every wall edge" {
     try expectEqual(@as(?Position, null), snake.next());
 
     // Down off the bottom row.
-    snake.body.items[0] = .{ .x = 10, .y = Grid.HEIGHT - 1 };
+    snake.body.items[0] = .{ .x = 10, .y = GRID_HEIGHT - 1 };
     snake.direction = .down;
     try expectEqual(@as(?Position, null), snake.next());
 
@@ -181,7 +156,7 @@ test "next returns null at every wall edge" {
     try expectEqual(@as(?Position, null), snake.next());
 
     // Right off the last column.
-    snake.body.items[0] = .{ .x = Grid.WIDTH - 1, .y = 10 };
+    snake.body.items[0] = .{ .x = GRID_WIDTH - 1, .y = 10 };
     snake.direction = .right;
     try expectEqual(@as(?Position, null), snake.next());
 }
@@ -303,19 +278,6 @@ test "setDirection ignores reversals into self" {
     try expectEqual(Direction.up, snake.direction);
 }
 
-test "Grid.center is the middle of the board" {
-    try expectEqual(@as(Position, .{ .x = Grid.WIDTH / 2, .y = Grid.HEIGHT / 2 }), Grid.center());
-}
-
-test "Grid.clear resets every cell to empty" {
-    var grid = Grid.init();
-    grid.cells[0][0] = .snake;
-    grid.cells[5][10] = .food;
-    grid.cells[Grid.HEIGHT - 1][Grid.WIDTH - 1] = .snake;
-
-    grid.clear();
-
-    for (grid.cells) |row| {
-        for (row) |cell| try expectEqual(Cell.empty, cell);
-    }
+test "grid_center is the middle of the board" {
+    try expectEqual(@as(Position, .{ .x = GRID_WIDTH / 2, .y = GRID_HEIGHT / 2 }), grid_center());
 }

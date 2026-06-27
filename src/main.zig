@@ -4,18 +4,43 @@ const print = std.debug.print;
 const termios = std.posix.termios;
 const STDIN_FILENO = std.posix.STDIN_FILENO;
 
-pub fn render(grid: *core.Grid, game: *core.Game, snake: *core.Snake, food: *core.Food, writer: *std.Io.File.Writer) !void {
+const Cell = enum {
+    snake,
+    food,
+    empty,
+};
+
+const Grid = struct {
+    cells: [core.GRID_HEIGHT][core.GRID_WIDTH]Cell,
+
+    pub fn init() Grid {
+        const empty_row = [_]Cell{.empty} ** core.GRID_WIDTH;
+        const cells = [_][core.GRID_WIDTH]Cell{empty_row} ** core.GRID_HEIGHT;
+        return .{ .cells = cells };
+    }
+
+    pub fn clear(self: *Grid) void {
+        // could also do self.cells = Grid.init().cells;
+        for (&self.cells) |*row| {
+            for (row) |*col| {
+                col.* = .empty;
+            }
+        }
+    }
+};
+
+pub fn render(grid: *Grid, game: *core.Game, snake: *core.Snake, food: *core.Food, writer: *std.Io.File.Writer) !void {
     const stdout = &writer.interface;
     const ws = termSize();
-    const total_w = grid.WIDTH + 2; // + 2 for left/right borders
-    const total_h = grid.HEIGHT + 3; // + 3 for top/bottom borders and score rows
+    const total_w = core.GRID_WIDTH + 2; // + 2 for left/right borders
+    const total_h = core.GRID_HEIGHT + 3; // + 3 for top/bottom borders and score rows
     const left = if (ws.col > total_w) (ws.col - total_w) / 2 else 0;
     const top = if (ws.row > total_h) (ws.row - total_h) / 2 else 0;
 
     for (snake.body.items) |pos| {
-        grid.cells[@intCast(pos.y)][@intCast(pos.x)] = core.Cell.snake;
+        grid.cells[@intCast(pos.y)][@intCast(pos.x)] = Cell.snake;
     }
-    grid.cells[@intCast(food.pos.y)][@intCast(food.pos.x)] = core.Cell.food;
+    grid.cells[@intCast(food.pos.y)][@intCast(food.pos.x)] = Cell.food;
 
     // wipe the screen so shifted content leaves no ghosts, then draw each
     // line at an absolute (row, col) — every line positions itself because
@@ -27,13 +52,13 @@ pub fn render(grid: *core.Grid, game: *core.Game, snake: *core.Snake, food: *cor
     line += 1;
 
     try stdout.print("\x1b[{};{}H┌", .{ line, left });
-    for (0..grid.WIDTH) |_| try stdout.print("─", .{});
+    for (0..core.GRID_WIDTH) |_| try stdout.print("─", .{});
     try stdout.print("┐", .{});
     line += 1;
 
-    for (0..grid.HEIGHT) |row| {
+    for (0..core.GRID_HEIGHT) |row| {
         try stdout.print("\x1b[{};{}H│", .{ line, left });
-        for (0..grid.WIDTH) |col| {
+        for (0..core.GRID_WIDTH) |col| {
             const cell = grid.cells[row][col];
             switch (cell) {
                 .empty => try stdout.print(" ", .{}),
@@ -46,7 +71,7 @@ pub fn render(grid: *core.Grid, game: *core.Game, snake: *core.Snake, food: *cor
     }
 
     try stdout.print("\x1b[{};{}H└", .{ line, left });
-    for (0..grid.WIDTH) |_| try stdout.print("─", .{});
+    for (0..core.GRID_WIDTH) |_| try stdout.print("─", .{});
     try stdout.print("┘", .{});
 
     grid.clear();
@@ -106,7 +131,7 @@ pub fn main(init: std.process.Init) !void {
     defer _ = debug.deinit();
     defer snake.deinit(gpa);
 
-    var grid = core.Grid.init();
+    var grid = Grid.init();
 
     var buf: [1]u8 = undefined;
     while (true) {
@@ -125,5 +150,18 @@ pub fn main(init: std.process.Init) !void {
         }
         try render(&grid, &game, &snake, &food, &stdout_writer);
         try stdout.flush();
+    }
+}
+
+test "Grid.clear resets every cell to empty" {
+    var grid = Grid.init();
+    grid.cells[0][0] = .snake;
+    grid.cells[5][10] = .food;
+    grid.cells[core.GRID_HEIGHT - 1][core.GRID_WIDTH - 1] = .snake;
+
+    grid.clear();
+
+    for (grid.cells) |row| {
+        for (row) |cell| try std.testing.expectEqual(Cell.empty, cell);
     }
 }
