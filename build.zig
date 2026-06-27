@@ -28,6 +28,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    wasm.root_module.addImport("core", core_mod);
+
     wasm.entry = .disabled;
     wasm.rdynamic = true;
     b.installArtifact(wasm);
