@@ -15,11 +15,11 @@ pub const Game = struct {
     state: GameState,
 };
 
-const GameState = enum {
-    food_ate,
-    running,
-    paused,
-    over,
+pub const GameState = enum {
+    food_ate, // 0
+    running, // 1
+    paused, // 2
+    over, // 3
 };
 
 pub const Food = struct {
