@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("core.zig");
+const core = @import("core");
 const print = std.debug.print;
 const termios = std.posix.termios;
 const STDIN_FILENO = std.posix.STDIN_FILENO;

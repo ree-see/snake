@@ -4,10 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Single-module executable: the whole game (simulation core + terminal
-    // shell) currently lives in src/main.zig and imports nothing but std. When
-    // the WASM extraction lands the sim core will be split into its own module
-    // and wired back in here; until then there is no library module.
+    const core_mod = b.createModule(.{ .root_source_file = b.path("src/core.zig"), .target = target, .optimize = optimize });
+
     const exe = b.addExecutable(.{
         .name = "snake",
         .root_module = b.createModule(.{
@@ -16,6 +14,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+
+    exe.root_module.addImport("core", core_mod);
 
     b.installArtifact(exe);
 
@@ -33,6 +33,10 @@ pub fn build(b: *std.Build) void {
     });
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    const core_tests = b.addTest(.{ .root_module = core_mod });
+    const run_core_tests = b.addRunArtifact(core_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_core_tests.step);
 }
