@@ -19,6 +19,19 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    const wasm = b.addExecutable(.{
+        .name = "snake-wasm",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm.zig"),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding }),
+            .optimize = .ReleaseSmall,
+        }),
+    });
+
+    wasm.entry = .disabled;
+    wasm.rdynamic = true;
+    b.installArtifact(wasm);
+
     // `zig build run` -- launch the interactive TUI (ESC quits).
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -26,6 +39,10 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    // `zig build wasm` -- builds wasm library
+    const wasm_step = b.step("wasm", "Create wasm bin");
+    wasm_step.dependOn(&b.addInstallArtifact(wasm, .{}).step);
 
     // `zig build test` -- run the `test {}` blocks in src/main.zig.
     const exe_tests = b.addTest(.{
