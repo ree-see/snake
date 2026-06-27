@@ -39,7 +39,7 @@ const Direction = enum {
     down,
 };
 
-const Position = struct {
+const Position = extern struct {
     x: u8,
     y: u8,
 };

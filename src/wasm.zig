@@ -28,3 +28,27 @@ export fn tick() u8 {
 
     return @intFromEnum(step_result);
 }
+
+export fn setDirection(key_press: u8) void {
+    snake.setDirection(key_press);
+}
+
+export fn getSnakeLength() usize {
+    return snake.body.items.len;
+}
+
+export fn getSnakePtr() usize {
+    return @intFromPtr(snake.body.items.ptr);
+}
+
+export fn getScore() u8 {
+    return game.score;
+}
+
+export fn getFoodPosX() u8 {
+    return food.pos.x;
+}
+
+export fn getFoodPosY() u8 {
+    return food.pos.y;
+}
