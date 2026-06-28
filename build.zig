@@ -14,18 +14,18 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(server);
 
-    const exe = b.addExecutable(.{
+    const tui = b.addExecutable(.{
         .name = "snake",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("src/tui.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
 
-    exe.root_module.addImport("core", core_mod);
+    tui.root_module.addImport("core", core_mod);
 
-    b.installArtifact(exe);
+    b.installArtifact(tui);
 
     const wasm = b.addExecutable(.{
         .name = "snake-wasm",
@@ -48,8 +48,9 @@ pub fn build(b: *std.Build) void {
 
     const server_step = b.step("server", "launch the http server");
     server_step.dependOn(&server_cmd.step);
+
     // `zig build run` -- launch the interactive TUI (ESC quits).
-    const run_cmd = b.addRunArtifact(exe);
+    const run_cmd = b.addRunArtifact(tui);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
 
@@ -62,7 +63,7 @@ pub fn build(b: *std.Build) void {
 
     // `zig build test` -- run the `test {}` blocks in src/main.zig.
     const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
+        .root_module = tui.root_module,
     });
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
