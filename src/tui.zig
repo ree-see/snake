@@ -6,7 +6,6 @@ const STDIN_FILENO = std.posix.STDIN_FILENO;
 
 const Cell = enum {
     snake,
-    food,
     empty,
 };
 
@@ -29,7 +28,7 @@ const Grid = struct {
     }
 };
 
-pub fn render(grid: *Grid, game: *core.Game, snake: *core.Snake, food: *core.Food, writer: *std.Io.File.Writer) !void {
+pub fn render(grid: *Grid, game: *core.Game, snake: *core.Snake, writer: *std.Io.File.Writer) !void {
     const stdout = &writer.interface;
     const ws = termSize();
     const total_w = core.GRID_WIDTH + 2; // + 2 for left/right borders
@@ -40,7 +39,6 @@ pub fn render(grid: *Grid, game: *core.Game, snake: *core.Snake, food: *core.Foo
     for (snake.body.items) |pos| {
         grid.cells[@intCast(pos.y)][@intCast(pos.x)] = Cell.snake;
     }
-    grid.cells[@intCast(food.pos.y)][@intCast(food.pos.x)] = Cell.food;
 
     // wipe the screen so shifted content leaves no ghosts, then draw each
     // line at an absolute (row, col) — every line positions itself because
@@ -63,7 +61,6 @@ pub fn render(grid: *Grid, game: *core.Game, snake: *core.Snake, food: *core.Foo
             switch (cell) {
                 .empty => try stdout.print(" ", .{}),
                 .snake => try stdout.print("▢", .{}),
-                .food => try stdout.print("⛦", .{}),
             }
         }
         try stdout.print("│", .{});
@@ -122,12 +119,8 @@ pub fn main(init: std.process.Init) !void {
         stdout.flush() catch {};
     }
 
-    const seed: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
-    var prng = std.Random.DefaultPrng.init(seed);
-    const rand = prng.random();
     var game = core.Game{ .score = 0, .state = .running };
     var snake = try core.Snake.init(gpa);
-    var food = core.Food.new(rand);
     defer _ = debug.deinit();
     defer snake.deinit(gpa);
 
@@ -140,15 +133,12 @@ pub fn main(init: std.process.Init) !void {
             if (buf[0] == '\x1b') break;
             snake.setDirection(buf[0]);
         }
-        switch (try snake.step(gpa, &food)) {
-            .food_ate => {
-                game.score += 1;
-                food = core.Food.new(rand);
-            },
+        switch (try snake.step(gpa)) {
             .over => break,
             else => {},
         }
-        try render(&grid, &game, &snake, &food, &stdout_writer);
+        if (try snake.step(gpa) == .over) break;
+        try render(&grid, &game, &snake, &stdout_writer);
         try stdout.flush();
     }
 }
@@ -156,7 +146,6 @@ pub fn main(init: std.process.Init) !void {
 test "Grid.clear resets every cell to empty" {
     var grid = Grid.init();
     grid.cells[0][0] = .snake;
-    grid.cells[5][10] = .food;
     grid.cells[core.GRID_HEIGHT - 1][core.GRID_WIDTH - 1] = .snake;
 
     grid.clear();

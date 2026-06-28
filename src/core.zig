@@ -1,7 +1,7 @@
 const std = @import("std");
 
-pub const GRID_WIDTH = 64;
-pub const GRID_HEIGHT = 32;
+pub const GRID_WIDTH = 128;
+pub const GRID_HEIGHT = 96;
 
 pub fn grid_center() Position {
     const x = GRID_WIDTH / 2;
@@ -16,20 +16,9 @@ pub const Game = struct {
 };
 
 pub const GameState = enum {
-    food_ate, // 0
-    running, // 1
-    paused, // 2
-    over, // 3
-};
-
-pub const Food = struct {
-    pos: Position,
-
-    pub fn new(rand: std.Random) Food {
-        const x = rand.intRangeLessThan(u8, 0, GRID_WIDTH);
-        const y = rand.intRangeLessThan(u8, 0, GRID_HEIGHT);
-        return Food{ .pos = Position{ .x = x, .y = y } };
-    }
+    running,
+    paused,
+    over,
 };
 
 const Direction = enum {
@@ -111,12 +100,10 @@ pub const Snake = struct {
         }
     }
 
-    pub fn step(self: *Snake, gpa: std.mem.Allocator, food: *Food) !GameState {
+    pub fn step(self: *Snake, gpa: std.mem.Allocator) !GameState {
         const target = self.next() orelse return .over; // if off grid returns game over if not returns a pos
         if (self.contains(target)) return .over; // self collision check
         try self.body.insert(gpa, 0, target);
-        if (target.x == food.pos.x and target.y == food.pos.y) return .food_ate; // checks if target is a food cell
-        _ = self.body.pop();
         return .running;
     }
 };
@@ -198,9 +185,8 @@ test "step into the wall ends the game" {
 
     snake.body.items[0] = .{ .x = 0, .y = 16 };
     snake.direction = .left; // next() is null off the left edge
-    var food = Food{ .pos = .{ .x = 63, .y = 31 } };
 
-    try expectEqual(GameState.over, try snake.step(gpa, &food));
+    try expectEqual(GameState.over, try snake.step(gpa));
 }
 
 test "step into own body ends the game" {
@@ -215,38 +201,21 @@ test "step into own body ends the game" {
     try snake.body.append(gpa, .{ .x = 11, .y = 11 });
     try snake.body.append(gpa, .{ .x = 11, .y = 10 }); // tail (the cell we hit)
     snake.direction = .right;
-    var food = Food{ .pos = .{ .x = 0, .y = 0 } };
 
-    try expectEqual(GameState.over, try snake.step(gpa, &food));
+    try expectEqual(GameState.over, try snake.step(gpa));
 }
 
-test "step onto food grows the snake and keeps the tail" {
+test "step grows the snakes every tick" {
     const gpa = std.testing.allocator;
     var snake = try Snake.init(gpa);
     defer snake.deinit(gpa);
 
     snake.body.items[0] = .{ .x = 10, .y = 10 };
     snake.direction = .right;
-    var food = Food{ .pos = .{ .x = 11, .y = 10 } }; // exactly the next cell
 
     const len_before = snake.body.items.len;
-    try expectEqual(GameState.food_ate, try snake.step(gpa, &food));
-    try expectEqual(len_before + 1, snake.body.items.len); // tail kept -> grew
-    try expectEqual(@as(Position, .{ .x = 11, .y = 10 }), snake.body.items[0]);
-}
-
-test "step on empty cell moves the snake and pops the tail" {
-    const gpa = std.testing.allocator;
-    var snake = try Snake.init(gpa);
-    defer snake.deinit(gpa);
-
-    snake.body.items[0] = .{ .x = 10, .y = 10 };
-    snake.direction = .right;
-    var food = Food{ .pos = .{ .x = 50, .y = 5 } }; // somewhere else
-
-    const len_before = snake.body.items.len;
-    try expectEqual(GameState.running, try snake.step(gpa, &food));
-    try expectEqual(len_before, snake.body.items.len); // tail popped -> same length
+    try expectEqual(GameState.running, try snake.step(gpa));
+    try expectEqual(len_before + 1, snake.body.items.len); // tail popped -> same length
     try expectEqual(@as(Position, .{ .x = 11, .y = 10 }), snake.body.items[0]);
 }
 
