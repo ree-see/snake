@@ -6,6 +6,14 @@ pub fn build(b: *std.Build) void {
 
     const core_mod = b.createModule(.{ .root_source_file = b.path("src/core.zig"), .target = target, .optimize = optimize });
 
+    const server = b.addExecutable(.{ .name = "http-server", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/http.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+
+    b.installArtifact(server);
+
     const exe = b.addExecutable(.{
         .name = "snake",
         .root_module = b.createModule(.{
@@ -34,6 +42,12 @@ pub fn build(b: *std.Build) void {
     wasm.rdynamic = true;
     b.installArtifact(wasm);
 
+    // `zig build server` -- launch http server
+    const server_cmd = b.addRunArtifact(server);
+    server_cmd.step.dependOn(b.getInstallStep());
+
+    const server_step = b.step("server", "launch the http server");
+    server_step.dependOn(&server_cmd.step);
     // `zig build run` -- launch the interactive TUI (ESC quits).
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

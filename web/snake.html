@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Snake -- Your Name</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="game-page">
+    <header class="topbar">
+      <a class="back" href="index.html">&larr; back</a>
+      <div class="score-box">score <span id="score">0</span></div>
+    </header>
+
+    <main class="stage">
+      <div class="board-wrap">
+        <canvas id="board" tabindex="0" aria-label="Snake game board"></canvas>
+        <div id="overlay" class="overlay hidden">
+          <div class="overlay-card">
+            <h2>game over</h2>
+            <p>press <kbd>space</kbd> to play again</p>
+          </div>
+        </div>
+      </div>
+      <p class="hint">
+        move with <kbd>&uarr;</kbd><kbd>&larr;</kbd><kbd>&darr;</kbd
+        ><kbd>&rarr;</kbd> / <kbd>WASD</kbd> / <kbd>IJKL</kbd> &middot; click the
+        board to focus it
+      </p>
+      <p class="caption">Written in Zig, compiled to WebAssembly.</p>
+      <p id="error" class="error"></p>
+    </main>
+
+    <script src="snake.js"></script>
+  </body>
+</html>
