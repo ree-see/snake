@@ -7,7 +7,7 @@ var game: core.Game = undefined;
 export fn init() void {
     const gpa = std.heap.wasm_allocator;
 
-    game = .{ .score = 0, .state = .running };
+    game = core.Game.init(gpa) catch @panic("OOM error");
     snake = core.Snake.init(gpa) catch @panic("OOM error");
 }
 

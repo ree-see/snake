@@ -119,7 +119,7 @@ pub fn main(init: std.process.Init) !void {
         stdout.flush() catch {};
     }
 
-    var game = core.Game{ .score = 0, .state = .running };
+    var game = try core.Game.init(gpa);
     var snake = try core.Snake.init(gpa);
     defer _ = debug.deinit();
     defer snake.deinit(gpa);

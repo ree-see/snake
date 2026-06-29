@@ -3,16 +3,54 @@ const std = @import("std");
 pub const GRID_WIDTH = 128;
 pub const GRID_HEIGHT = 96;
 
+pub fn grid_corner(direction: Direction) struct { Direction, Position } {
+    const top_left = Position{ .x = 0, .y = 0 };
+    const top_right = Position{ .x = GRID_WIDTH - 1, .y = 0 };
+    const bottom_left = Position{ .x = 0, .y = GRID_HEIGHT - 1 };
+    const bottom_right = Position{ .x = GRID_WIDTH - 1, .y = GRID_HEIGHT - 1 };
+
+    switch (direction) {
+        .left => return .{ .left, top_right },
+        .right => return .{ .right, bottom_left },
+        .up => return .{ .up, bottom_right },
+        .down => return .{ .down, top_left },
+    }
+}
+
 pub fn grid_center() Position {
     const x = GRID_WIDTH / 2;
     const y = GRID_HEIGHT / 2;
 
     return Position{ .x = x, .y = y };
 }
-
 pub const Game = struct {
     score: u8,
     state: GameState,
+    snakes: [2]Snake,
+
+    pub fn init(gpa: std.mem.Allocator) !Game {
+        const direction_a, const pos_a = grid_corner(.down);
+        const direction_b, const pos_b = grid_corner(.up);
+
+        const snake_a = try Snake.initAt(gpa, pos_a, direction_a);
+        const snake_b = try Snake.initAt(gpa, pos_b, direction_b);
+
+        var snakes: [2]Snake = undefined;
+        snakes[0] = snake_a;
+        snakes[1] = snake_b;
+        return .{ .score = 0, .state = .running, .snakes = snakes };
+    }
+
+    pub fn deinit(self: *Game, gpa: std.mem.Allocator) void {
+        self.snakes[0].deinit(gpa);
+        self.snakes[1].deinit(gpa);
+    }
+
+    pub fn tick(self: *Game, gpa: std.mem.Allocator) !void {
+        for (&self.snakes) |*snake| {
+            _ = try snake.step(gpa);
+        }
+    }
 };
 
 pub const GameState = enum {
@@ -39,13 +77,21 @@ pub const Snake = struct {
 
     pub fn init(gpa: std.mem.Allocator) !Snake {
         var body = std.ArrayList(Position).empty;
-        const center = grid_center();
-
-        try body.append(gpa, center);
+        try body.append(gpa, .{ .x = 0, .y = 0 });
 
         return .{
             .body = body,
-            .direction = .left,
+            .direction = .right,
+        };
+    }
+
+    pub fn initAt(gpa: std.mem.Allocator, starting_pos: Position, starting_direciton: Direction) !Snake {
+        var body = std.ArrayList(Position).empty;
+        try body.append(gpa, starting_pos);
+
+        return .{
+            .body = body,
+            .direction = starting_direciton,
         };
     }
 
@@ -100,10 +146,18 @@ pub const Snake = struct {
         }
     }
 
+    pub fn addHead(self: *Snake, gpa: std.mem.Allocator, next_pos: Position) !void {
+        try self.body.insert(gpa, 0, next_pos);
+    }
+
+    pub fn removeTail(self: *Snake) void {
+        _ = self.body.pop();
+    }
+
     pub fn step(self: *Snake, gpa: std.mem.Allocator) !GameState {
         const target = self.next() orelse return .over; // if off grid returns game over if not returns a pos
         if (self.contains(target)) return .over; // self collision check
-        try self.body.insert(gpa, 0, target);
+        try self.addHead(gpa, target);
         return .running;
     }
 };
@@ -249,4 +303,17 @@ test "setDirection ignores reversals into self" {
 
 test "grid_center is the middle of the board" {
     try expectEqual(@as(Position, .{ .x = GRID_WIDTH / 2, .y = GRID_HEIGHT / 2 }), grid_center());
+}
+
+test "simple game tick test" {
+    const gpa = std.testing.allocator;
+    var game = try Game.init(gpa);
+    defer game.deinit(gpa);
+    // const snake_a_starting_len = snake_a.body.items.len;
+    // const snake_b_starting_len = snake_b.body.items.len;
+
+    try game.tick(gpa);
+
+    try std.testing.expectEqual(2, game.snakes[0].body.items.len);
+    try std.testing.expectEqual(2, game.snakes[1].body.items.len);
 }
