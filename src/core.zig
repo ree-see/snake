@@ -47,8 +47,25 @@ pub const Game = struct {
     }
 
     pub fn tick(self: *Game, gpa: std.mem.Allocator) !void {
-        for (&self.snakes) |*snake| {
-            _ = try snake.step(gpa);
+        for (&self.snakes, 0..) |*curr_snake, i| {
+            if (curr_snake.is_dead) continue;
+
+            for (&self.snakes, 0..) |*snake, j| {
+                const curr_snake_target = curr_snake.next() orelse continue;
+                if (i == j) continue; // skip outer loop snake
+                if (snake.contains(curr_snake_target)) {
+                    curr_snake.is_dead = true;
+                    curr_snake.clearBody();
+                    break;
+                }
+            }
+
+            if (curr_snake.is_dead) continue;
+            const result = try curr_snake.step(gpa);
+            if (result == .over) {
+                curr_snake.is_dead = true;
+                curr_snake.clearBody();
+            }
         }
     }
 };
@@ -74,6 +91,7 @@ const Position = extern struct {
 pub const Snake = struct {
     body: std.ArrayList(Position),
     direction: Direction,
+    is_dead: bool,
 
     pub fn init(gpa: std.mem.Allocator) !Snake {
         var body = std.ArrayList(Position).empty;
@@ -82,6 +100,7 @@ pub const Snake = struct {
         return .{
             .body = body,
             .direction = .right,
+            .is_dead = false,
         };
     }
 
@@ -92,6 +111,7 @@ pub const Snake = struct {
         return .{
             .body = body,
             .direction = starting_direciton,
+            .is_dead = false,
         };
     }
 
@@ -152,6 +172,14 @@ pub const Snake = struct {
 
     pub fn removeTail(self: *Snake) void {
         _ = self.body.pop();
+    }
+
+    pub fn len(self: *Snake) usize {
+        return self.body.items.len;
+    }
+
+    pub fn clearBody(self: *Snake) void {
+        self.body.clearRetainingCapacity();
     }
 
     pub fn step(self: *Snake, gpa: std.mem.Allocator) !GameState {
@@ -249,7 +277,7 @@ test "step into own body ends the game" {
     defer snake.deinit(gpa);
 
     // A 2x2 loop: head at {10,10} moving right lands on the tail at {11,10}.
-    snake.body.clearRetainingCapacity();
+    snake.clearBody();
     try snake.body.append(gpa, .{ .x = 10, .y = 10 }); // head
     try snake.body.append(gpa, .{ .x = 10, .y = 11 });
     try snake.body.append(gpa, .{ .x = 11, .y = 11 });
@@ -267,9 +295,9 @@ test "step grows the snakes every tick" {
     snake.body.items[0] = .{ .x = 10, .y = 10 };
     snake.direction = .right;
 
-    const len_before = snake.body.items.len;
+    const len_before = snake.len();
     try expectEqual(GameState.running, try snake.step(gpa));
-    try expectEqual(len_before + 1, snake.body.items.len); // tail popped -> same length
+    try expectEqual(len_before + 1, snake.len()); // tail popped -> same length
     try expectEqual(@as(Position, .{ .x = 11, .y = 10 }), snake.body.items[0]);
 }
 
@@ -309,11 +337,59 @@ test "simple game tick test" {
     const gpa = std.testing.allocator;
     var game = try Game.init(gpa);
     defer game.deinit(gpa);
-    // const snake_a_starting_len = snake_a.body.items.len;
-    // const snake_b_starting_len = snake_b.body.items.len;
 
     try game.tick(gpa);
 
-    try std.testing.expectEqual(2, game.snakes[0].body.items.len);
-    try std.testing.expectEqual(2, game.snakes[1].body.items.len);
+    try std.testing.expectEqual(2, game.snakes[0].len());
+    try std.testing.expectEqual(2, game.snakes[1].len());
+}
+
+test "game tick annotate snake is dead when step returns game over" {
+    const gpa = std.testing.allocator;
+    var game = try Game.init(gpa);
+    defer game.deinit(gpa);
+
+    game.snakes[0].body.items[0] = .{ .x = 0, .y = 16 };
+    game.snakes[0].direction = .left; // next() is null off the left edge
+    try game.tick(gpa);
+
+    try expect(game.snakes[0].is_dead);
+}
+
+test "game tick snakes dies check if dead snake body is gone" {
+    const gpa = std.testing.allocator;
+    var game = try Game.init(gpa);
+    defer game.deinit(gpa);
+
+    game.snakes[0].body.items[0] = .{ .x = 0, .y = 16 };
+    game.snakes[0].direction = .left; // next() is null off the left edge
+    try game.tick(gpa);
+    try game.tick(gpa);
+
+    try expectEqual(0, game.snakes[0].len());
+    try expect(!game.snakes[1].is_dead);
+}
+
+test "collision with other snakes body" {
+    const gpa = std.testing.allocator;
+    var game = try Game.init(gpa);
+    defer game.deinit(gpa);
+
+    var snake_a = &game.snakes[0];
+    var snake_b = &game.snakes[1];
+
+    snake_a.body.items[0] = .{ .x = 0, .y = 0 };
+    try snake_a.body.append(gpa, .{ .x = 0, .y = 1 });
+    try snake_a.body.append(gpa, .{ .x = 0, .y = 2 });
+    snake_a.direction = .right;
+
+    snake_b.body.items[0] = .{ .x = 1, .y = 1 };
+    try snake_b.body.append(gpa, .{ .x = 2, .y = 1 });
+    try snake_b.body.append(gpa, .{ .x = 3, .y = 1 });
+    snake_b.direction = .left;
+
+    try game.tick(gpa);
+
+    try std.testing.expect(snake_b.is_dead);
+    try std.testing.expectEqual(0, snake_b.len());
 }
