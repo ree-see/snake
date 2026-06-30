@@ -28,11 +28,6 @@ pub const Game = struct {
     state: GameState,
     snakes: [5]Snake,
 
-    const CollisionError = enum {
-        H2HCollision,
-        BodyCollision,
-    };
-
     const Pair = struct { usize, usize };
 
     pub fn init(gpa: std.mem.Allocator) !Game {
