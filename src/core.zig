@@ -23,8 +23,67 @@ pub fn grid_center() Position {
 
     return Position{ .x = x, .y = y };
 }
-pub const Game = struct {
+
+const Food = struct {
+    pos: Position,
+
+    pub fn new(rand: std.Random) Food {
+        return Food{
+            .pos = .{ .x = rand.intRangeLessThan(u8, 0, GRID_WIDTH - 1), .y = rand.intRangeLessThan(u8, 0, GRID_HEIGHT - 1) },
+        };
+    }
+};
+
+pub const ClassicGame = struct {
     score: u8,
+    snake: Snake,
+    food: Food,
+    state: GameState,
+
+    pub fn init(gpa: std.mem.Allocator, rand: std.Random) !ClassicGame {
+        const snake = try Snake.init(gpa);
+        const food = Food.new(rand);
+        const state = GameState.running;
+
+        return .{ .score = 0, .snake = snake, .food = food, .state = state };
+    }
+
+    pub fn deinit(self: *ClassicGame, gpa: std.mem.Allocator) void {
+        self.snake.deinit(gpa);
+    }
+
+    pub fn spawnFood(self: *ClassicGame, rand: std.Random) ?Food {
+        // check if board is full with snakes body
+        if (self.snake.len() == GRID_HEIGHT * GRID_WIDTH) return null;
+        var new_food = Food.new(rand);
+        // generate new food pos thats not the snakes body
+        while (self.snake.contains(new_food.pos)) {
+            new_food = Food.new(rand);
+        }
+
+        return new_food;
+    }
+
+    pub fn tick(self: *ClassicGame, gpa: std.mem.Allocator, rand: std.Random) !void {
+        if (self.snake.next()) |next_pos| {
+            if (self.snake.contains(next_pos)) {
+                self.state = .over;
+            }
+            try self.snake.addHead(gpa, next_pos);
+
+            if (std.meta.eql(next_pos, self.food.pos)) {
+                self.score += 1;
+                if (self.spawnFood(rand)) |food| self.food = food else self.state = .over;
+            } else {
+                self.snake.removeTail();
+            }
+        } else {
+            self.state = .over;
+        }
+    }
+};
+
+pub const TronGame = struct {
     state: GameState,
     snakes: [5]Snake,
     deaths: [5]DeathResult,
@@ -32,7 +91,7 @@ pub const Game = struct {
 
     const DeathResult = struct { died: usize, killer: ?usize };
 
-    pub fn init(gpa: std.mem.Allocator) !Game {
+    pub fn init(gpa: std.mem.Allocator) !TronGame {
         const direction_a, const pos_a = grid_corner(.down);
         const direction_b, const pos_b = grid_corner(.up);
         const direction_c, const pos_c = grid_corner(.left);
@@ -52,10 +111,10 @@ pub const Game = struct {
         snakes[2] = snake_c;
         snakes[3] = snake_d;
         snakes[4] = snake_e;
-        return .{ .score = 0, .state = .running, .snakes = snakes, .deaths = deaths, .death_count = 0 };
+        return .{ .state = .running, .snakes = snakes, .deaths = deaths, .death_count = 0 };
     }
 
-    pub fn deinit(self: *Game, gpa: std.mem.Allocator) void {
+    pub fn deinit(self: *TronGame, gpa: std.mem.Allocator) void {
         self.snakes[0].deinit(gpa);
         self.snakes[1].deinit(gpa);
         self.snakes[2].deinit(gpa);
@@ -64,7 +123,7 @@ pub const Game = struct {
     }
 
     // collect all next snakes positions
-    pub fn nextPositions(self: *Game) [self.snakes.len]?Position {
+    pub fn nextPositions(self: *TronGame) [self.snakes.len]?Position {
         var targets: [self.snakes.len]?Position = undefined;
         for (&self.snakes, 0..) |*snake, i| {
             if (snake.is_dead) continue;
@@ -75,7 +134,7 @@ pub const Game = struct {
     }
 
     // check if any of the next positions are the same and if there are then return the pairs
-    pub fn checkH2HCollision(self: *Game) void {
+    pub fn checkH2HCollision(self: *TronGame) void {
         const positions = self.nextPositions();
         for (positions, 0..) |pos, i| {
             var j = i + 1;
@@ -101,7 +160,7 @@ pub const Game = struct {
         }
     }
 
-    pub fn checkBodyCollision(self: *Game) void {
+    pub fn checkBodyCollision(self: *TronGame) void {
         for (&self.snakes, 0..) |*curr_snake, i| {
             if (curr_snake.is_dead) continue;
             for (&self.snakes, 0..) |*snake, j| {
@@ -116,7 +175,7 @@ pub const Game = struct {
         }
     }
 
-    pub fn checkSelfCollision(self: *Game) void {
+    pub fn checkSelfCollision(self: *TronGame) void {
         for (&self.snakes, 0..) |*snake, i| {
             if (snake.is_dead) continue;
             const next_pos = snake.next() orelse {
@@ -132,7 +191,7 @@ pub const Game = struct {
         }
     }
 
-    pub fn applyDeaths(self: *Game) void {
+    pub fn applyDeaths(self: *TronGame) void {
         for (self.deaths[0..self.death_count]) |death| {
             self.snakes[death.died].kill();
             if (death.killer) |killer| {
@@ -142,7 +201,7 @@ pub const Game = struct {
         self.death_count = 0;
     }
 
-    pub fn advanceSnakes(self: *Game, gpa: std.mem.Allocator) !void {
+    pub fn advanceSnakes(self: *TronGame, gpa: std.mem.Allocator) !void {
         var dead_snake_count: u8 = 0;
         for (&self.snakes) |*snake| {
             if (snake.is_dead) {
@@ -156,7 +215,7 @@ pub const Game = struct {
         }
     }
 
-    pub fn tick(self: *Game, gpa: std.mem.Allocator) !void {
+    pub fn tick(self: *TronGame, gpa: std.mem.Allocator) !void {
         self.checkBodyCollision();
         self.checkH2HCollision();
         self.checkSelfCollision();
@@ -191,7 +250,7 @@ pub const Snake = struct {
 
     pub fn init(gpa: std.mem.Allocator) !Snake {
         var body = std.ArrayList(Position).empty;
-        try body.append(gpa, .{ .x = 0, .y = 0 });
+        try body.append(gpa, grid_center());
 
         return .{
             .body = body,
@@ -363,7 +422,7 @@ test "contains reports head, body, and misses" {
 
 test "step into the wall annotates snake is dead and hit a wall" {
     const gpa = std.testing.allocator;
-    var game = try Game.init(gpa);
+    var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
     game.snakes[0].direction = .left; // next() is null off the left edge
@@ -376,7 +435,7 @@ test "step into the wall annotates snake is dead and hit a wall" {
 
 test "step into own body ends the game" {
     const gpa = std.testing.allocator;
-    var game = try Game.init(gpa);
+    var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
     // A 2x2 loop: head at {10,10} moving right lands on the tail at {11,10}.
@@ -441,7 +500,7 @@ test "grid_center is the middle of the board" {
 
 test "simple game tick test" {
     const gpa = std.testing.allocator;
-    var game = try Game.init(gpa);
+    var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
     try game.tick(gpa);
@@ -450,9 +509,9 @@ test "simple game tick test" {
     try std.testing.expectEqual(2, game.snakes[1].len());
 }
 
-test "game tick annotate snake is dead when step returns game over" {
+test "game tick annotate snake is dead" {
     const gpa = std.testing.allocator;
-    var game = try Game.init(gpa);
+    var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
     game.snakes[0].body.items[0] = .{ .x = 0, .y = 16 };
@@ -464,7 +523,7 @@ test "game tick annotate snake is dead when step returns game over" {
 
 test "game tick snakes dies check if dead snake body is gone" {
     const gpa = std.testing.allocator;
-    var game = try Game.init(gpa);
+    var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
     game.snakes[0].body.items[0] = .{ .x = 0, .y = 16 };
@@ -478,7 +537,7 @@ test "game tick snakes dies check if dead snake body is gone" {
 
 test "collision with other snakes body" {
     const gpa = std.testing.allocator;
-    var game = try Game.init(gpa);
+    var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
     var snake_a = &game.snakes[0];
@@ -502,7 +561,7 @@ test "collision with other snakes body" {
 
 test "collision with other snakes body adds to kill count" {
     const gpa = std.testing.allocator;
-    var game = try Game.init(gpa);
+    var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
     var snake_a = &game.snakes[0];
@@ -525,7 +584,7 @@ test "collision with other snakes body adds to kill count" {
 
 test "collision h2h test" {
     const gpa = std.testing.allocator;
-    var game = try Game.init(gpa);
+    var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
     var snake_a = &game.snakes[0];
@@ -543,4 +602,103 @@ test "collision h2h test" {
 
     try std.testing.expect(snake_a.is_dead);
     try std.testing.expectEqual(2, snake_b.kills);
+}
+
+test "classic snake movement" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+    var game = try ClassicGame.init(gpa, rand);
+    defer game.deinit(gpa);
+
+    const len_before = game.snake.len();
+    try game.tick(gpa, rand);
+
+    try std.testing.expectEqual(len_before, game.snake.len());
+}
+
+test "classic snake growth by eating" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    var game = try ClassicGame.init(gpa, rand);
+    defer game.deinit(gpa);
+    const center = grid_center();
+
+    game.food.pos.x = center.x + 1;
+    game.food.pos.y = center.y;
+
+    try game.tick(gpa, rand);
+
+    try std.testing.expectEqual(1, game.score);
+    try std.testing.expectEqual(2, game.snake.len());
+}
+
+test "food is respawning after being eaten" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    var game = try ClassicGame.init(gpa, rand);
+    defer game.deinit(gpa);
+    const center = grid_center();
+
+    game.food.pos.x = center.x + 1;
+    game.food.pos.y = center.y;
+
+    const food_before = game.food;
+
+    try game.tick(gpa, rand);
+
+    try std.testing.expect(!std.meta.eql(food_before.pos, game.food.pos));
+}
+
+test "classic game tick mutates game state if snakes dies" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    var game = try ClassicGame.init(gpa, rand);
+    defer game.deinit(gpa);
+
+    game.snake.body.items[0] = .{ .x = 0, .y = 16 };
+    game.snake.direction = .left; // next() is null off the left edge
+    try game.tick(gpa, rand);
+
+    try std.testing.expectEqual(GameState.over, game.state);
+}
+
+test "classic game spawns food free from snakes body" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    var game = try ClassicGame.init(gpa, rand);
+    defer game.deinit(gpa);
+    game.snake.body.items[0] = Position{
+        .x = 0,
+        .y = GRID_WIDTH - 1,
+    };
+    game.snake.direction = .left;
+
+    for (0..GRID_WIDTH / 3) |x| {
+        for (1..GRID_HEIGHT - 1) |y| {
+            const pos = Position{ .x = @intCast(x), .y = @intCast(y) };
+            try game.snake.body.append(gpa, pos);
+        }
+    }
+    const new_food = game.spawnFood(rand).?;
+
+    try std.testing.expect(!game.snake.contains(new_food.pos));
 }
