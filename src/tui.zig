@@ -1,5 +1,5 @@
 const std = @import("std");
-const core = @import("core");
+const core = @import("core.zig");
 const print = std.debug.print;
 const termios = std.posix.termios;
 const STDIN_FILENO = std.posix.STDIN_FILENO;
@@ -7,6 +7,7 @@ const STDIN_FILENO = std.posix.STDIN_FILENO;
 const Cell = enum {
     snake,
     empty,
+    food,
 };
 
 const Grid = struct {
@@ -28,7 +29,7 @@ const Grid = struct {
     }
 };
 
-pub fn render(grid: *Grid, game: *core.Game, snake: *core.Snake, writer: *std.Io.File.Writer) !void {
+pub fn render(grid: *Grid, game: *core.ClassicGame, writer: *std.Io.File.Writer) !void {
     const stdout = &writer.interface;
     const ws = termSize();
     const total_w = core.GRID_WIDTH + 2; // + 2 for left/right borders
@@ -36,13 +37,10 @@ pub fn render(grid: *Grid, game: *core.Game, snake: *core.Snake, writer: *std.Io
     const left = if (ws.col > total_w) (ws.col - total_w) / 2 else 0;
     const top = if (ws.row > total_h) (ws.row - total_h) / 2 else 0;
 
-    for (snake.body.items) |pos| {
+    for (game.snake.body.items) |pos| {
         grid.cells[@intCast(pos.y)][@intCast(pos.x)] = Cell.snake;
     }
 
-    // wipe the screen so shifted content leaves no ghosts, then draw each
-    // line at an absolute (row, col) — every line positions itself because
-    // \r would otherwise snap the cursor back to column 0 and kill centering.
     try stdout.print("\x1b[2J", .{});
     var line: u16 = top;
 
@@ -61,6 +59,7 @@ pub fn render(grid: *Grid, game: *core.Game, snake: *core.Snake, writer: *std.Io
             switch (cell) {
                 .empty => try stdout.print(" ", .{}),
                 .snake => try stdout.print("▢", .{}),
+                .food => try stdout.print("*", .{}),
             }
         }
         try stdout.print("│", .{});
@@ -106,6 +105,9 @@ pub fn main(init: std.process.Init) !void {
     const stdout = &stdout_writer.interface;
     var debug = std.heap.DebugAllocator(.{}){};
     const gpa = debug.allocator();
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
 
     // terminal setup for raw mode
     const term = try enableRawMode();
@@ -119,10 +121,9 @@ pub fn main(init: std.process.Init) !void {
         stdout.flush() catch {};
     }
 
-    var game = try core.Game.init(gpa);
-    var snake = try core.Snake.init(gpa);
+    var game = try core.ClassicGame.init(gpa, rand);
+    defer game.deinit(gpa);
     defer _ = debug.deinit();
-    defer snake.deinit(gpa);
 
     var grid = Grid.init();
 
@@ -131,14 +132,11 @@ pub fn main(init: std.process.Init) !void {
         const n = try std.posix.read(STDIN_FILENO, &buf);
         if (n > 0) {
             if (buf[0] == '\x1b') break;
-            snake.setDirection(buf[0]);
+            game.snake.setDirection(buf[0]);
         }
-        switch (try snake.step(gpa)) {
-            .over => break,
-            else => {},
-        }
-        if (try snake.step(gpa) == .over) break;
-        try render(&grid, &game, &snake, &stdout_writer);
+        try game.tick(gpa, rand);
+        try render(&grid, &game, &stdout_writer);
+        if (game.state == .over) break;
         try stdout.flush();
     }
 }

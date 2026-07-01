@@ -3,7 +3,7 @@ const std = @import("std");
 pub const GRID_WIDTH = 128;
 pub const GRID_HEIGHT = 96;
 
-pub fn grid_corner(direction: Direction) struct { Direction, Position } {
+pub fn gridCorner(direction: Direction) struct { Direction, Position } {
     const top_left = Position{ .x = 0, .y = 0 };
     const top_right = Position{ .x = GRID_WIDTH - 1, .y = 0 };
     const bottom_left = Position{ .x = 0, .y = GRID_HEIGHT - 1 };
@@ -17,7 +17,7 @@ pub fn grid_corner(direction: Direction) struct { Direction, Position } {
     }
 }
 
-pub fn grid_center() Position {
+pub fn gridCenter() Position {
     const x = GRID_WIDTH / 2;
     const y = GRID_HEIGHT / 2;
 
@@ -92,11 +92,11 @@ pub const TronGame = struct {
     const DeathResult = struct { died: usize, killer: ?usize };
 
     pub fn init(gpa: std.mem.Allocator) !TronGame {
-        const direction_a, const pos_a = grid_corner(.down);
-        const direction_b, const pos_b = grid_corner(.up);
-        const direction_c, const pos_c = grid_corner(.left);
-        const direction_d, const pos_d = grid_corner(.right);
-        const pos_e = grid_center();
+        const direction_a, const pos_a = gridCorner(.down);
+        const direction_b, const pos_b = gridCorner(.up);
+        const direction_c, const pos_c = gridCorner(.left);
+        const direction_d, const pos_d = gridCorner(.right);
+        const pos_e = gridCenter();
         const direction_e: Direction = .left;
         const snake_a = try Snake.initAt(gpa, pos_a, direction_a);
         const snake_b = try Snake.initAt(gpa, pos_b, direction_b);
@@ -250,7 +250,7 @@ pub const Snake = struct {
 
     pub fn init(gpa: std.mem.Allocator) !Snake {
         var body = std.ArrayList(Position).empty;
-        try body.append(gpa, grid_center());
+        try body.append(gpa, gridCenter());
 
         return .{
             .body = body,
@@ -354,7 +354,7 @@ pub const Snake = struct {
 // Characterization tests for the simulation core.
 //
 // These pin the *current* behavior of the platform-agnostic model
-// (Snake.next/step/contains, setDirection, grid_center/clear) before the
+// (Snake.next/step/contains, setDirection, gridCenter/clear) before the
 // planned WASM extraction refactor moves this logic. They intentionally drive
 // the model directly (setting `direction` / `body` instead of going through
 // the terminal loop) so they need no TTY. Run with `zig test src/main.zig`
@@ -494,8 +494,8 @@ test "setDirection ignores reversals into self" {
     try expectEqual(Direction.up, snake.direction);
 }
 
-test "grid_center is the middle of the board" {
-    try expectEqual(@as(Position, .{ .x = GRID_WIDTH / 2, .y = GRID_HEIGHT / 2 }), grid_center());
+test "gridCenter is the middle of the board" {
+    try expectEqual(@as(Position, .{ .x = GRID_WIDTH / 2, .y = GRID_HEIGHT / 2 }), gridCenter());
 }
 
 test "simple game tick test" {
@@ -628,7 +628,7 @@ test "classic snake growth by eating" {
 
     var game = try ClassicGame.init(gpa, rand);
     defer game.deinit(gpa);
-    const center = grid_center();
+    const center = gridCenter();
 
     game.food.pos.x = center.x + 1;
     game.food.pos.y = center.y;
@@ -648,7 +648,7 @@ test "food is respawning after being eaten" {
 
     var game = try ClassicGame.init(gpa, rand);
     defer game.deinit(gpa);
-    const center = grid_center();
+    const center = gridCenter();
 
     game.food.pos.x = center.x + 1;
     game.food.pos.y = center.y;

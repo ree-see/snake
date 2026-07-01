@@ -1,35 +1,30 @@
 const std = @import("std");
 const core = @import("core");
 
-var snake: core.Snake = undefined;
-var game: core.Game = undefined;
+var game: core.TronGame = undefined;
 
 export fn init() void {
     const gpa = std.heap.wasm_allocator;
-
-    game = core.Game.init(gpa) catch @panic("OOM error");
-    snake = core.Snake.init(gpa) catch @panic("OOM error");
+    game = core.TronGame.init(gpa) catch @panic("OOM error");
 }
 
-export fn tick() u8 {
+export fn tick() void {
     const gpa = std.heap.wasm_allocator;
-    const step_result = snake.step(gpa) catch @panic("OOM error");
-
-    return @intFromEnum(step_result);
+    game.tick(gpa) catch @panic("OOM error");
 }
 
-export fn setDirection(key_press: u8) void {
-    snake.setDirection(key_press);
+export fn setDirection(idx: usize, key_press: u8) void {
+    game.snakes[idx].setDirection(key_press);
 }
 
-export fn getSnakeLength() usize {
-    return snake.body.items.len;
+export fn getSnakeLength(idx: usize) usize {
+    return game.snakes[idx].len();
 }
 
-export fn getSnakePtr() usize {
-    return @intFromPtr(snake.body.items.ptr);
+export fn getSnakePtr(idx: usize) usize {
+    return @intFromPtr(game.snakes[idx].body.items.ptr);
 }
 
-export fn getScore() u8 {
-    return game.score;
+export fn getGameState() u8 {
+    return @intFromEnum(game.state);
 }
