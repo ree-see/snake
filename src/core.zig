@@ -27,8 +27,10 @@ pub const Game = struct {
     score: u8,
     state: GameState,
     snakes: [5]Snake,
+    deaths: [5]DeathResult,
+    death_count: u8,
 
-    const Pair = struct { usize, usize };
+    const DeathResult = struct { died: usize, killer: ?usize };
 
     pub fn init(gpa: std.mem.Allocator) !Game {
         const direction_a, const pos_a = grid_corner(.down);
@@ -43,13 +45,14 @@ pub const Game = struct {
         const snake_d = try Snake.initAt(gpa, pos_d, direction_d);
         const snake_e = try Snake.initAt(gpa, pos_e, direction_e);
 
+        const deaths: [5]DeathResult = undefined;
         var snakes: [5]Snake = undefined;
         snakes[0] = snake_a;
         snakes[1] = snake_b;
         snakes[2] = snake_c;
         snakes[3] = snake_d;
         snakes[4] = snake_e;
-        return .{ .score = 0, .state = .running, .snakes = snakes };
+        return .{ .score = 0, .state = .running, .snakes = snakes, .deaths = deaths, .death_count = 0 };
     }
 
     pub fn deinit(self: *Game, gpa: std.mem.Allocator) void {
@@ -72,12 +75,8 @@ pub const Game = struct {
     }
 
     // check if any of the next positions are the same and if there are then return the pairs
-    pub fn checkH2HCollision(self: *Game) [self.snakes.len / 2]?Pair {
-        // thought of an edge case this doesn't handle very rare but if 2 pairs of snakes are about h2h collide
+    pub fn checkH2HCollision(self: *Game) void {
         const positions = self.nextPositions();
-        const max_collisions = self.snakes.len / 2;
-        var collisions: [max_collisions]?Pair = [_]?Pair{null} ** max_collisions;
-        var count: usize = 0;
         for (positions, 0..) |pos, i| {
             var j = i + 1;
             if (i == positions.len - 1) break;
@@ -88,59 +87,81 @@ pub const Game = struct {
                     continue;
                 }
                 if (std.meta.eql(pos.?, next_pos.?)) {
-                    collisions[count] = .{ i, j };
+                    if (self.snakes[i].kills == self.snakes[j].kills or self.snakes[i].kills > self.snakes[j].kills) {
+                        self.deaths[self.death_count] = DeathResult{ .died = j, .killer = i };
+                    } else {
+                        self.deaths[self.death_count] = DeathResult{ .died = i, .killer = j };
+                    }
                     j += 1;
-                    count += 1;
+                    self.death_count += 1;
                 } else {
                     j += 1;
                 }
             }
         }
-        return collisions;
     }
 
-    pub fn tick(self: *Game, gpa: std.mem.Allocator) !void {
-        for (self.checkH2HCollision()) |pair| {
-            const idx_a, const idx_b = pair orelse continue;
-
-            var snake_a = &self.snakes[idx_a];
-            var snake_b = &self.snakes[idx_b];
-
-            if (snake_a.kills == snake_b.kills) {
-                snake_b.kill();
-                snake_a.kills += 1;
-            }
-
-            if (snake_a.kills > snake_b.kills) {
-                snake_b.kill();
-                snake_a.kills += 1;
-            }
-            if (snake_a.kills < snake_b.kills) {
-                snake_a.kill();
-                snake_b.kills += 1;
-            }
-        }
-
+    pub fn checkBodyCollision(self: *Game) void {
         for (&self.snakes, 0..) |*curr_snake, i| {
             if (curr_snake.is_dead) continue;
-            // check for body collision
             for (&self.snakes, 0..) |*snake, j| {
                 const curr_snake_target = curr_snake.next() orelse continue;
                 if (i == j) continue; // skip outer loop snake
                 if (snake.contains(curr_snake_target)) {
-                    curr_snake.is_dead = true;
-                    curr_snake.clearBody();
-                    snake.kills += 1;
+                    self.deaths[self.death_count] = DeathResult{ .died = i, .killer = j };
+                    self.death_count += 1;
                     break;
                 }
             }
+        }
+    }
 
-            if (curr_snake.is_dead) continue;
-            const result = try curr_snake.step(gpa);
-            if (result == .over) {
-                curr_snake.kill();
+    pub fn checkSelfCollision(self: *Game) void {
+        for (&self.snakes, 0..) |*snake, i| {
+            if (snake.is_dead) continue;
+            const next_pos = snake.next() orelse {
+                self.deaths[self.death_count] = DeathResult{ .died = i, .killer = null };
+                self.death_count += 1;
+                continue;
+            };
+
+            if (snake.contains(next_pos)) {
+                self.deaths[self.death_count] = DeathResult{ .died = i, .killer = null };
+                self.death_count += 1;
             }
         }
+    }
+
+    pub fn applyDeaths(self: *Game) void {
+        for (self.deaths[0..self.death_count]) |death| {
+            self.snakes[death.died].kill();
+            if (death.killer) |killer| {
+                self.snakes[killer].kills += 1;
+            }
+        }
+        self.death_count = 0;
+    }
+
+    pub fn advanceSnakes(self: *Game, gpa: std.mem.Allocator) !void {
+        var dead_snake_count: u8 = 0;
+        for (&self.snakes) |*snake| {
+            if (snake.is_dead) {
+                dead_snake_count += 1;
+                continue;
+            }
+            if (dead_snake_count == 5) {
+                self.state = .over;
+            }
+            try snake.step(gpa);
+        }
+    }
+
+    pub fn tick(self: *Game, gpa: std.mem.Allocator) !void {
+        self.checkBodyCollision();
+        self.checkH2HCollision();
+        self.checkSelfCollision();
+        self.applyDeaths();
+        try self.advanceSnakes(gpa);
     }
 };
 
@@ -264,11 +285,9 @@ pub const Snake = struct {
         self.body.clearRetainingCapacity();
     }
 
-    pub fn step(self: *Snake, gpa: std.mem.Allocator) !GameState {
-        const target = self.next() orelse return .over; // if off grid returns game over if not returns a pos
-        if (self.contains(target)) return .over; // self collision check
-        try self.addHead(gpa, target);
-        return .running;
+    pub fn step(self: *Snake, gpa: std.mem.Allocator) !void {
+        if (self.next()) |target|
+            try self.addHead(gpa, target);
     }
 };
 
@@ -342,31 +361,36 @@ test "contains reports head, body, and misses" {
     try expect(!snake.contains(.{ .x = 0, .y = 0 })); // miss
 }
 
-test "step into the wall ends the game" {
+test "step into the wall annotates snake is dead and hit a wall" {
     const gpa = std.testing.allocator;
-    var snake = try Snake.init(gpa);
-    defer snake.deinit(gpa);
+    var game = try Game.init(gpa);
+    defer game.deinit(gpa);
 
-    snake.body.items[0] = .{ .x = 0, .y = 16 };
-    snake.direction = .left; // next() is null off the left edge
+    game.snakes[0].direction = .left; // next() is null off the left edge
+    game.checkSelfCollision();
 
-    try expectEqual(GameState.over, try snake.step(gpa));
+    const death_res = game.deaths[0];
+    try std.testing.expectEqual(1, game.death_count);
+    try std.testing.expectEqual(0, death_res.died);
 }
 
 test "step into own body ends the game" {
     const gpa = std.testing.allocator;
-    var snake = try Snake.init(gpa);
-    defer snake.deinit(gpa);
+    var game = try Game.init(gpa);
+    defer game.deinit(gpa);
 
     // A 2x2 loop: head at {10,10} moving right lands on the tail at {11,10}.
-    snake.clearBody();
-    try snake.body.append(gpa, .{ .x = 10, .y = 10 }); // head
-    try snake.body.append(gpa, .{ .x = 10, .y = 11 });
-    try snake.body.append(gpa, .{ .x = 11, .y = 11 });
-    try snake.body.append(gpa, .{ .x = 11, .y = 10 }); // tail (the cell we hit)
-    snake.direction = .right;
+    game.snakes[0].clearBody();
+    try game.snakes[0].body.append(gpa, .{ .x = 10, .y = 10 }); // head
+    try game.snakes[0].body.append(gpa, .{ .x = 10, .y = 11 });
+    try game.snakes[0].body.append(gpa, .{ .x = 11, .y = 11 });
+    try game.snakes[0].body.append(gpa, .{ .x = 11, .y = 10 }); // tail (the cell we hit)
+    game.snakes[0].direction = .right;
+    game.checkSelfCollision();
 
-    try expectEqual(GameState.over, try snake.step(gpa));
+    const death_res = game.deaths[0];
+    try std.testing.expectEqual(1, game.death_count);
+    try std.testing.expectEqual(0, death_res.died);
 }
 
 test "step grows the snakes every tick" {
@@ -378,8 +402,8 @@ test "step grows the snakes every tick" {
     snake.direction = .right;
 
     const len_before = snake.len();
-    try expectEqual(GameState.running, try snake.step(gpa));
-    try expectEqual(len_before + 1, snake.len()); // tail popped -> same length
+    try snake.step(gpa);
+    try expectEqual(len_before + 1, snake.len());
     try expectEqual(@as(Position, .{ .x = 11, .y = 10 }), snake.body.items[0]);
 }
 
