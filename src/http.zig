@@ -24,6 +24,12 @@ pub fn computeAcceptKey(key: []const u8) [28]u8 {
     return dest;
 }
 
+pub fn unmaskBits(payload: []u8, key: [4]u8) void {
+    for (payload, 0..) |*byte, i| {
+        byte.* ^= key[i % 4];
+    }
+}
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const addr = std.Io.net.IpAddress{ .ip4 = .loopback(8080) };
@@ -61,14 +67,28 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // TODO: respond with an error code if is_upgrade is false
-        // TODO: compute key and send an ack message to confirm with the client if is_upgrade true and have is not null
         if (key != null) {
             const computed_key = computeAcceptKey(key.?);
             try w.print("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {s}\r\n", .{&computed_key});
             try w.writeAll("\r\n");
             try w.flush();
-            continue;
+
+            while (true) {
+                const byte0 = r.takeByte() catch break; // [FIN 1bit][RSV 3bits][opcode 4bits]
+                const byte1 = try r.takeByte(); // [MASK 1bit][paylaod-len 7bits]
+
+                const opcode = byte0 & 0x0F; // what kind of frame
+                _ = opcode; // will use later
+                const is_masked = byte1 & 0x80; // bit 0 1 = is masked 0 = not masked illegal frame
+                if (is_masked == 0) {
+                    continue;
+                }
+                const length = byte1 & 0x7F; // 7-bit length if 126 -> next 2 bytes if 127 the next 8 bytes
+                const masking_key = try r.takeArray(4); // key to unmask the bit in the payload bytes
+                const payload = try r.take(length); // payload bytes
+                unmaskBits(payload, masking_key.*);
+                std.debug.print("{s}", .{payload});
+            }
         }
 
         if (std.mem.find(u8, target, "..") != null) {
@@ -103,4 +123,13 @@ test "websocket protocol key test" {
     const result = computeAcceptKey(key);
 
     try std.testing.expectEqualStrings("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", &result);
+}
+
+test "payload bit unmasking" {
+    var payload = [_]u8{ 0x7f, 0x9f, 0x4d, 0x51, 0x58 };
+    const key: [4]u8 = .{ 0x37, 0xfa, 0x21, 0x3d };
+
+    unmaskBits(&payload, key);
+
+    try std.testing.expectEqualStrings("Hello", &payload);
 }
