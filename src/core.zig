@@ -3,7 +3,7 @@ const std = @import("std");
 pub const GRID_WIDTH = 128;
 pub const GRID_HEIGHT = 96;
 
-pub fn gridCorner(direction: Direction) struct { Direction, Position } {
+pub fn gridCorner(direction: Snake.Direction) struct { Snake.Direction, Position } {
     const top_left = Position{ .x = 0, .y = 0 };
     const top_right = Position{ .x = GRID_WIDTH - 1, .y = 0 };
     const bottom_left = Position{ .x = 0, .y = GRID_HEIGHT - 1 };
@@ -97,7 +97,7 @@ pub const TronGame = struct {
         const direction_c, const pos_c = gridCorner(.left);
         const direction_d, const pos_d = gridCorner(.right);
         const pos_e = gridCenter();
-        const direction_e: Direction = .left;
+        const direction_e: Snake.Direction = .left;
         const snake_a = try Snake.initAt(gpa, pos_a, direction_a);
         const snake_b = try Snake.initAt(gpa, pos_b, direction_b);
         const snake_c = try Snake.initAt(gpa, pos_c, direction_c);
@@ -230,13 +230,6 @@ pub const GameState = enum {
     over,
 };
 
-const Direction = enum {
-    left,
-    right,
-    up,
-    down,
-};
-
 const Position = extern struct {
     x: u8,
     y: u8,
@@ -247,6 +240,13 @@ pub const Snake = struct {
     direction: Direction,
     kills: u8,
     body: std.ArrayList(Position),
+
+    const Direction = enum {
+        left,
+        right,
+        up,
+        down,
+    };
 
     pub fn init(gpa: std.mem.Allocator) !Snake {
         var body = std.ArrayList(Position).empty;
@@ -474,24 +474,24 @@ test "setDirection ignores reversals into self" {
     // Key bytes: 105=up(i), 106=left(j), 107=down(k), 108=right(l).
     snake.direction = .right;
     snake.setDirection(106); // left key while moving right -> ignored
-    try expectEqual(Direction.right, snake.direction);
+    try expectEqual(Snake.Direction.right, snake.direction);
 
     snake.direction = .left;
     snake.setDirection(108); // right key while moving left -> ignored
-    try expectEqual(Direction.left, snake.direction);
+    try expectEqual(Snake.Direction.left, snake.direction);
 
     snake.direction = .up;
     snake.setDirection(107); // down key while moving up -> ignored
-    try expectEqual(Direction.up, snake.direction);
+    try expectEqual(Snake.Direction.up, snake.direction);
 
     snake.direction = .down;
     snake.setDirection(105); // up key while moving down -> ignored
-    try expectEqual(Direction.down, snake.direction);
+    try expectEqual(Snake.Direction.down, snake.direction);
 
     // A perpendicular turn is still accepted.
     snake.direction = .right;
     snake.setDirection(105); // up key while moving right -> applied
-    try expectEqual(Direction.up, snake.direction);
+    try expectEqual(Snake.Direction.up, snake.direction);
 }
 
 test "gridCenter is the middle of the board" {
