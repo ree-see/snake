@@ -32,15 +32,12 @@ pub fn main(init: std.process.Init) !void {
 
         var server = http.Server.init(r, w);
         var req = try server.receiveHead();
-        var target = req.head.target;
-        var file_path: []u8 = undefined;
-        var pbuf: [256]u8 = undefined;
 
-        var it = req.iterateHeaders();
+        var headers = req.iterateHeaders();
         var key: ?[]const u8 = null;
 
         var is_upgrade = false;
-        while (it.next()) |next_header| {
+        while (headers.next()) |next_header| {
             if (std.ascii.eqlIgnoreCase(next_header.name, "upgrade")) {
                 is_upgrade = true;
             }
@@ -48,58 +45,11 @@ pub fn main(init: std.process.Init) !void {
                 key = next_header.value;
             }
         }
-
         if (key != null) {
-            const computed_key = computeAcceptKey(key.?);
-            try w.print("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {s}\r\n", .{&computed_key});
-            try w.writeAll("\r\n");
-            try w.flush();
-
-            // frame while loop
-            while (true) {
-                const byte0 = r.takeByte() catch break; // [FIN 1bit][RSV 3bits][opcode 4bits]
-                const byte1 = try r.takeByte(); // [MASK 1bit][paylaod-len 7bits]
-
-                const opcode = byte0 & 0x0F; // what kind of frame
-                _ = opcode; // will use later
-                const is_masked = byte1 & 0x80; // bit 0 1 = is masked 0 = not masked illegal frame
-                if (is_masked == 0) {
-                    continue;
-                }
-                const length = byte1 & 0x7F; // 7-bit length if 126 -> next 2 bytes if 127 the next 8 bytes
-                const masking_key = try r.takeArray(4); // key to unmask the bit in the payload bytes
-                const payload = try r.take(length); // payload bytes
-                unmaskBits(payload, masking_key.*);
-                std.debug.print("{s}", .{payload});
-                try writeFrame(w, payload);
-            }
+            try handleWebSocket(key.?, r, w);
             continue;
         }
-
-        if (std.mem.find(u8, target, "..") != null) {
-            try req.respond("", .{ .status = .not_found });
-            continue;
-        }
-
-        if (std.mem.eql(u8, target, "/")) {
-            target = "/index.html";
-        }
-
-        if (target[0] == '/') {
-            file_path = try std.fmt.bufPrint(&pbuf, "web{s}", .{target});
-        }
-
-        const ext = std.fs.path.extension(file_path);
-        const mime = MIME_MAP.get(ext) orelse "application/octet-stream";
-        const body = std.Io.Dir.cwd().readFileAlloc(io, file_path, gpa, .limited(10 * 1024 * 1024)) catch {
-            try req.respond("", .{ .status = .not_found });
-            continue;
-        };
-        defer gpa.free(body);
-
-        try req.respond(body, .{
-            .extra_headers = &.{.{ .name = "content-type", .value = mime }},
-        });
+        try serveFile(&req, io, gpa);
     }
 }
 
@@ -142,4 +92,61 @@ pub fn writeFrame(w: *std.Io.Writer, payload: []const u8) !void {
     try w.writeByte(@intCast(payload.len));
     try w.writeAll(payload);
     try w.flush();
+}
+
+pub fn serveFile(req: *http.Server.Request, io: std.Io, alloc: std.mem.Allocator) !void {
+    var file_path: []u8 = undefined;
+    var pbuf: [256]u8 = undefined;
+
+    var target = req.head.target;
+    if (std.mem.find(u8, target, "..") != null) {
+        try req.respond("", .{ .status = .not_found });
+        return;
+    }
+
+    if (std.mem.eql(u8, target, "/")) {
+        target = "/index.html";
+    }
+
+    if (target[0] == '/') {
+        file_path = try std.fmt.bufPrint(&pbuf, "web{s}", .{target});
+    }
+
+    const ext = std.fs.path.extension(file_path);
+    const mime = MIME_MAP.get(ext) orelse "application/octet-stream";
+    const body = std.Io.Dir.cwd().readFileAlloc(io, file_path, alloc, .limited(10 * 1024 * 1024)) catch {
+        try req.respond("", .{ .status = .not_found });
+        return;
+    };
+    defer alloc.free(body);
+
+    try req.respond(body, .{
+        .extra_headers = &.{.{ .name = "content-type", .value = mime }},
+    });
+}
+
+pub fn handleWebSocket(key: []const u8, r: *std.Io.Reader, w: *std.Io.Writer) !void {
+    const computed_key = computeAcceptKey(key);
+    try w.print("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {s}\r\n", .{&computed_key});
+    try w.writeAll("\r\n");
+    try w.flush();
+
+    // frame while loop
+    while (true) {
+        const byte0 = r.takeByte() catch break; // [FIN 1bit][RSV 3bits][opcode 4bits]
+        const byte1 = try r.takeByte(); // [MASK 1bit][paylaod-len 7bits]
+
+        const opcode = byte0 & 0x0F; // what kind of frame
+        _ = opcode; // will use later
+        const is_masked = byte1 & 0x80; // bit 0 1 = is masked 0 = not masked illegal frame
+        if (is_masked == 0) {
+            continue;
+        }
+        const length = byte1 & 0x7F; // 7-bit length if 126 -> next 2 bytes if 127 the next 8 bytes
+        const masking_key = try r.takeArray(4); // key to unmask the bit in the payload bytes
+        const payload = try r.take(length); // payload bytes
+        unmaskBits(payload, masking_key.*);
+        try writeFrame(w, payload);
+    }
+    return;
 }
