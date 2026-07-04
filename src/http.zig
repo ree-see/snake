@@ -12,24 +12,6 @@ const MIME_MAP = std.StaticStringMap([]const u8).initComptime(.{
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-pub fn computeAcceptKey(key: []const u8) [28]u8 {
-    var digest: [20]u8 = undefined;
-    var hash = crypto.hash.Sha1.init(.{});
-    hash.update(key);
-    hash.update(GUID);
-    hash.final(&digest);
-
-    var dest: [28]u8 = undefined;
-    _ = base64.standard.Encoder.encode(&dest, &digest);
-    return dest;
-}
-
-pub fn unmaskBits(payload: []u8, key: [4]u8) void {
-    for (payload, 0..) |*byte, i| {
-        byte.* ^= key[i % 4];
-    }
-}
-
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const addr = std.Io.net.IpAddress{ .ip4 = .loopback(8080) };
@@ -73,6 +55,7 @@ pub fn main(init: std.process.Init) !void {
             try w.writeAll("\r\n");
             try w.flush();
 
+            // frame while loop
             while (true) {
                 const byte0 = r.takeByte() catch break; // [FIN 1bit][RSV 3bits][opcode 4bits]
                 const byte1 = try r.takeByte(); // [MASK 1bit][paylaod-len 7bits]
@@ -88,7 +71,9 @@ pub fn main(init: std.process.Init) !void {
                 const payload = try r.take(length); // payload bytes
                 unmaskBits(payload, masking_key.*);
                 std.debug.print("{s}", .{payload});
+                try writeFrame(w, payload);
             }
+            continue;
         }
 
         if (std.mem.find(u8, target, "..") != null) {
@@ -118,11 +103,29 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
+pub fn computeAcceptKey(key: []const u8) [28]u8 {
+    var digest: [20]u8 = undefined;
+    var hash = crypto.hash.Sha1.init(.{});
+    hash.update(key);
+    hash.update(GUID);
+    hash.final(&digest);
+
+    var dest: [28]u8 = undefined;
+    _ = base64.standard.Encoder.encode(&dest, &digest);
+    return dest;
+}
+
 test "websocket protocol key test" {
     const key = "dGhlIHNhbXBsZSBub25jZQ==";
     const result = computeAcceptKey(key);
 
     try std.testing.expectEqualStrings("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", &result);
+}
+
+pub fn unmaskBits(payload: []u8, key: [4]u8) void {
+    for (payload, 0..) |*byte, i| {
+        byte.* ^= key[i % 4];
+    }
 }
 
 test "payload bit unmasking" {
@@ -132,4 +135,11 @@ test "payload bit unmasking" {
     unmaskBits(&payload, key);
 
     try std.testing.expectEqualStrings("Hello", &payload);
+}
+
+pub fn writeFrame(w: *std.Io.Writer, payload: []const u8) !void {
+    try w.writeByte(0x81);
+    try w.writeByte(@intCast(payload.len));
+    try w.writeAll(payload);
+    try w.flush();
 }
