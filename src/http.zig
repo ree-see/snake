@@ -12,22 +12,34 @@ const MIME_MAP = std.StaticStringMap([]const u8).initComptime(.{
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-pub fn main(init: std.process.Init) !void {
-    const io = init.io;
-    const addr = std.Io.net.IpAddress{ .ip4 = .loopback(8080) };
-    var listener = try std.Io.net.IpAddress.listen(&addr, io, .{});
-    const gpa = init.gpa;
+const Connection = struct {
+    stream: std.Io.net.Stream,
+    io: std.Io,
+    alloc: std.mem.Allocator,
 
-    while (true) {
+    pub fn init(io: std.Io, listener: *std.Io.net.Server, alloc: std.mem.Allocator) !Connection {
         const stream = try listener.accept(io);
-        defer stream.close(io);
+        return .{
+            .io = io,
+            .stream = stream,
+            .alloc = alloc,
+        };
+    }
 
+    pub fn deinit(self: Connection) void {
+        self.stream.close(self.io);
+    }
+};
+
+pub fn handleConnection(conn: Connection) !void {
+    defer conn.deinit();
+    while (true) {
         var w_buf: [256]u8 = undefined;
-        var writer = stream.writer(io, &w_buf);
+        var writer = conn.stream.writer(conn.io, &w_buf);
         const w = &writer.interface;
 
         var r_buf: [4096]u8 = undefined;
-        var reader = stream.reader(io, &r_buf);
+        var reader = conn.stream.reader(conn.io, &r_buf);
         const r = &reader.interface;
 
         var server = http.Server.init(r, w);
@@ -49,7 +61,26 @@ pub fn main(init: std.process.Init) !void {
             try handleWebSocket(key.?, r, w);
             continue;
         }
-        try serveFile(&req, io, gpa);
+        try serveFile(&req, conn.io, conn.alloc);
+    }
+}
+
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const addr = std.Io.net.IpAddress{ .ip4 = .loopback(8080) };
+    var listener = try std.Io.net.IpAddress.listen(&addr, io, .{});
+    const gpa = init.gpa;
+
+    while (true) {
+        const conn = Connection.init(io, &listener, gpa) catch |err| {
+            std.debug.print("{}", .{err});
+            continue;
+        };
+        const thread = std.Thread.spawn(.{}, handleConnection, .{conn}) catch |err| {
+            std.debug.print("{}", .{err});
+            continue;
+        };
+        thread.detach();
     }
 }
 
