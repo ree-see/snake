@@ -57,7 +57,7 @@ pub const ClassicGame = struct {
         if (self.snake.len() == GRID_HEIGHT * GRID_WIDTH) return null;
         var new_food = Food.new(rand);
         // generate new food pos thats not the snakes body
-        while (self.snake.contains(new_food.pos)) {
+        while (bodyContains(self.snake.body.items, new_food.pos)) {
             new_food = Food.new(rand);
         }
 
@@ -65,8 +65,8 @@ pub const ClassicGame = struct {
     }
 
     pub fn tick(self: *ClassicGame, gpa: std.mem.Allocator, rand: std.Random) !void {
-        if (self.snake.next()) |next_pos| {
-            if (self.snake.contains(next_pos)) {
+        if (nextPos(self.snake.direction, self.snake.body.items[0])) |next_pos| {
+            if (bodyContains(self.snake.body.items, next_pos)) {
                 self.state = .over;
             }
             try self.snake.addHead(gpa, next_pos);
@@ -83,13 +83,53 @@ pub const ClassicGame = struct {
     }
 };
 
+// Pure geometry over data, not methods on a fat object. TronGame's hot loops
+// call these directly against SoA columns; Snake.next/contains delegate to them
+// so the single-snake path (ClassicGame) and the many-snake SoA path share one
+// implementation.
+fn nextPos(direction: Snake.Direction, head: Position) ?Position {
+    return switch (direction) {
+        .up => if (head.y == 0) null else .{ .x = head.x, .y = head.y - 1 },
+        .down => if (head.y == GRID_HEIGHT - 1) null else .{ .x = head.x, .y = head.y + 1 },
+        .left => if (head.x == 0) null else .{ .x = head.x - 1, .y = head.y },
+        .right => if (head.x == GRID_WIDTH - 1) null else .{ .x = head.x + 1, .y = head.y },
+    };
+}
+
+fn bodyContains(body: []const Position, target: Position) bool {
+    for (body) |pos| {
+        if (std.meta.eql(pos, target)) return true;
+    }
+    return false;
+}
+
 pub const TronGame = struct {
+    // ---- Data-oriented layout ------------------------------------------------
+    // The old shape was `snakes: [n]Snake` — an array of fat structs. Every tick,
+    // checkBodyCollision / checkSelfCollision / advanceSnakes open with
+    //     if (snake.is_dead) continue;
+    // In AoS, reading that one bool drags the whole Snake (bool + direction +
+    // kills + a ~24-byte ArrayList handle) into cache, one line per snake, just
+    // to decide whether to skip it.
+    //
+    // MultiArrayList stores each field in its own parallel column, so the dead
+    // gate scans a dense []bool: many snakes per cache line, and the hardware
+    // prefetcher can stream it. We reach for MultiArrayList (not a fixed [n] SoA
+    // struct) because the snake.io north star has a *dynamic* player count.
+    //
+    // The limit worth remembering: `body` is still an ArrayList — a pointer to a
+    // per-snake heap allocation. Packing the handles contiguously does nothing
+    // for the bodyContains() scan, which follows that pointer off to scattered
+    // heap memory. Fixing the body scan is a separate, deeper redesign.
     state: GameState,
-    snakes: [5]Snake,
-    deaths: [5]DeathResult,
+    snakes: std.MultiArrayList(Snake),
+    deaths: [n_snakes]DeathResult,
     death_count: u8,
 
-    const DeathResult = struct { died: usize, killer: ?usize };
+    pub const n_snakes: u8 = 5;
+    // Indices into `snakes`, not pointers or usize: a u8 addresses the roster
+    // with room to spare. (Kelley's "shrink the struct" half.)
+    const DeathResult = struct { died: u8, killer: ?u8 };
 
     pub fn init(gpa: std.mem.Allocator) !TronGame {
         const direction_a, const pos_a = gridCorner(.down);
@@ -98,121 +138,147 @@ pub const TronGame = struct {
         const direction_d, const pos_d = gridCorner(.right);
         const pos_e = gridCenter();
         const direction_e: Snake.Direction = .left;
-        const snake_a = try Snake.initAt(gpa, pos_a, direction_a);
-        const snake_b = try Snake.initAt(gpa, pos_b, direction_b);
-        const snake_c = try Snake.initAt(gpa, pos_c, direction_c);
-        const snake_d = try Snake.initAt(gpa, pos_d, direction_d);
-        const snake_e = try Snake.initAt(gpa, pos_e, direction_e);
 
-        const deaths: [5]DeathResult = undefined;
-        var snakes: [5]Snake = undefined;
-        snakes[0] = snake_a;
-        snakes[1] = snake_b;
-        snakes[2] = snake_c;
-        snakes[3] = snake_d;
-        snakes[4] = snake_e;
-        return .{ .state = .running, .snakes = snakes, .deaths = deaths, .death_count = 0 };
+        var snakes: std.MultiArrayList(Snake) = .empty;
+        try snakes.append(gpa, try Snake.initAt(gpa, pos_a, direction_a));
+        try snakes.append(gpa, try Snake.initAt(gpa, pos_b, direction_b));
+        try snakes.append(gpa, try Snake.initAt(gpa, pos_c, direction_c));
+        try snakes.append(gpa, try Snake.initAt(gpa, pos_d, direction_d));
+        try snakes.append(gpa, try Snake.initAt(gpa, pos_e, direction_e));
+
+        return .{
+            .state = .lobby,
+            .snakes = snakes,
+            .deaths = undefined,
+            .death_count = 0,
+        };
     }
 
     pub fn deinit(self: *TronGame, gpa: std.mem.Allocator) void {
-        self.snakes[0].deinit(gpa);
-        self.snakes[1].deinit(gpa);
-        self.snakes[2].deinit(gpa);
-        self.snakes[3].deinit(gpa);
-        self.snakes[4].deinit(gpa);
+        // Each body owns its own heap allocation — free them before the columns.
+        for (self.snakes.items(.body)) |*body| body.deinit(gpa);
+        self.snakes.deinit(gpa);
     }
 
-    // collect all next snakes positions
-    pub fn nextPositions(self: *TronGame) [self.snakes.len]?Position {
-        var targets: [self.snakes.len]?Position = undefined;
-        for (&self.snakes, 0..) |*snake, i| {
-            if (snake.is_dead) continue;
-            targets[i] = snake.next();
-        }
+    // Snapshot each live snake's next head cell; dead snakes are null.
+    pub fn nextPositions(self: *TronGame) [n_snakes]?Position {
+        const s = self.snakes.slice();
+        const dead = s.items(.is_dead);
+        const dir = s.items(.direction);
+        const body = s.items(.body);
 
+        var targets: [n_snakes]?Position = undefined;
+        for (0..n_snakes) |i| {
+            targets[i] = if (dead[i]) null else nextPos(dir[i], body[i].items[0]);
+        }
         return targets;
     }
 
-    // check if any of the next positions are the same and if there are then return the pairs
+    // Two live heads aiming at the same cell: the one with fewer kills dies
+    // (ties: the higher index dies), the other is credited the kill.
     pub fn checkH2HCollision(self: *TronGame) void {
         const positions = self.nextPositions();
-        for (positions, 0..) |pos, i| {
+        const s = self.snakes.slice();
+        const dead = s.items(.is_dead);
+        const kills = s.items(.kills);
+
+        for (positions, 0..) |maybe_a, i| {
+            if (i == n_snakes - 1) break;
+            const a = maybe_a orelse continue;
             var j = i + 1;
-            if (i == positions.len - 1) break;
-            while (j <= positions.len - 1) {
-                const next_pos = positions[j];
-                if (pos == null or next_pos == null) {
-                    j += 1;
-                    continue;
-                }
-                if (std.meta.eql(pos.?, next_pos.?)) {
-                    if (self.snakes[i].kills == self.snakes[j].kills or self.snakes[i].kills > self.snakes[j].kills) {
-                        self.deaths[self.death_count] = DeathResult{ .died = j, .killer = i };
-                    } else {
-                        self.deaths[self.death_count] = DeathResult{ .died = i, .killer = j };
-                    }
-                    j += 1;
-                    self.death_count += 1;
+            while (j < n_snakes) : (j += 1) {
+                const b = positions[j] orelse continue;
+                if (!std.meta.eql(a, b)) continue;
+
+                if (kills[i] >= kills[j]) {
+                    self.deaths[self.death_count] = .{ .died = @intCast(j), .killer = @intCast(i) };
+                    dead[j] = true;
                 } else {
-                    j += 1;
+                    self.deaths[self.death_count] = .{ .died = @intCast(i), .killer = @intCast(j) };
+                    dead[i] = true;
                 }
+                self.death_count += 1;
             }
         }
     }
 
+    // A live head stepping into any snake's body dies; that snake gets the kill.
     pub fn checkBodyCollision(self: *TronGame) void {
-        for (&self.snakes, 0..) |*curr_snake, i| {
-            if (curr_snake.is_dead) continue;
-            for (&self.snakes, 0..) |*snake, j| {
-                const curr_snake_target = curr_snake.next() orelse continue;
-                if (i == j) continue; // skip outer loop snake
-                if (snake.contains(curr_snake_target)) {
-                    self.deaths[self.death_count] = DeathResult{ .died = i, .killer = j };
+        const s = self.snakes.slice();
+        const dead = s.items(.is_dead);
+        const dir = s.items(.direction);
+        const body = s.items(.body);
+
+        for (0..n_snakes) |i| {
+            if (dead[i]) continue;
+            const target = nextPos(dir[i], body[i].items[0]) orelse continue;
+            for (0..n_snakes) |j| {
+                if (i == j) continue;
+                if (bodyContains(body[j].items, target)) {
+                    self.deaths[self.death_count] = .{ .died = @intCast(i), .killer = @intCast(j) };
                     self.death_count += 1;
+                    dead[i] = true;
                     break;
                 }
             }
         }
     }
 
+    // A live head with no legal next cell (wall) or stepping into itself dies,
+    // uncredited.
     pub fn checkSelfCollision(self: *TronGame) void {
-        for (&self.snakes, 0..) |*snake, i| {
-            if (snake.is_dead) continue;
-            const next_pos = snake.next() orelse {
-                self.deaths[self.death_count] = DeathResult{ .died = i, .killer = null };
+        const s = self.snakes.slice();
+        const dead = s.items(.is_dead);
+        const dir = s.items(.direction);
+        const body = s.items(.body);
+
+        for (0..n_snakes) |i| {
+            if (dead[i]) continue;
+            const target = nextPos(dir[i], body[i].items[0]) orelse {
+                self.deaths[self.death_count] = .{ .died = @intCast(i), .killer = null };
                 self.death_count += 1;
+                dead[i] = true;
                 continue;
             };
-
-            if (snake.contains(next_pos)) {
-                self.deaths[self.death_count] = DeathResult{ .died = i, .killer = null };
+            if (bodyContains(body[i].items, target)) {
+                self.deaths[self.death_count] = .{ .died = @intCast(i), .killer = null };
                 self.death_count += 1;
+                dead[i] = true;
             }
         }
     }
 
     pub fn applyDeaths(self: *TronGame) void {
+        const s = self.snakes.slice();
+        const dead = s.items(.is_dead);
+        const kills = s.items(.kills);
+        const body = s.items(.body);
+
         for (self.deaths[0..self.death_count]) |death| {
-            self.snakes[death.died].kill();
-            if (death.killer) |killer| {
-                self.snakes[killer].kills += 1;
-            }
+            dead[death.died] = true;
+            body[death.died].clearRetainingCapacity();
+            if (death.killer) |killer| kills[killer] += 1;
         }
         self.death_count = 0;
     }
 
     pub fn advanceSnakes(self: *TronGame, gpa: std.mem.Allocator) !void {
-        var dead_snake_count: u8 = 0;
-        for (&self.snakes) |*snake| {
-            if (snake.is_dead) {
-                dead_snake_count += 1;
+        const s = self.snakes.slice();
+        const dead = s.items(.is_dead);
+        const dir = s.items(.direction);
+        const body = s.items(.body);
+
+        var dead_count: u8 = 0;
+        for (0..n_snakes) |i| {
+            if (dead[i]) {
+                dead_count += 1;
                 continue;
             }
-            if (dead_snake_count == 5) {
-                self.state = .over;
+            if (nextPos(dir[i], body[i].items[0])) |target| {
+                try body[i].insert(gpa, 0, target);
             }
-            try snake.step(gpa);
         }
+        if (dead_count == n_snakes) self.state = .over;
     }
 
     pub fn tick(self: *TronGame, gpa: std.mem.Allocator) !void {
@@ -225,6 +291,7 @@ pub const TronGame = struct {
 };
 
 pub const GameState = enum {
+    lobby,
     running,
     paused,
     over,
@@ -283,25 +350,6 @@ pub const Snake = struct {
 
     // returns null for illegal step position on the grid
     // returns position for legal step position on the grid
-    pub fn next(self: *Snake) ?Position {
-        const head = self.body.items[0];
-        const next_pos: ?Position = switch (self.direction) {
-            .up => if (head.y == 0) null else Position{ .x = head.x, .y = head.y - 1 },
-            .down => if (head.y == GRID_HEIGHT - 1) null else Position{ .x = head.x, .y = head.y + 1 },
-            .left => if (head.x == 0) null else Position{ .x = head.x - 1, .y = head.y },
-            .right => if (head.x == GRID_WIDTH - 1) null else Position{ .x = head.x + 1, .y = head.y },
-        };
-
-        return next_pos;
-    }
-
-    pub fn contains(self: *Snake, target: Position) bool {
-        for (self.body.items) |pos| {
-            if (std.meta.eql(pos, target)) return true;
-        }
-        return false;
-    }
-
     pub fn setDirection(self: *Snake, key_press: u8) void {
         switch (key_press) {
             105 => {
@@ -345,7 +393,7 @@ pub const Snake = struct {
     }
 
     pub fn step(self: *Snake, gpa: std.mem.Allocator) !void {
-        if (self.next()) |target|
+        if (nextPos(self.direction, self.body.items[0])) |target|
             try self.addHead(gpa, target);
     }
 };
@@ -372,22 +420,22 @@ test "next returns null at every wall edge" {
     // Up off the top row.
     snake.body.items[0] = .{ .x = 10, .y = 0 };
     snake.direction = .up;
-    try expectEqual(@as(?Position, null), snake.next());
+    try expectEqual(@as(?Position, null), nextPos(snake.direction, snake.body.items[0]));
 
     // Down off the bottom row.
     snake.body.items[0] = .{ .x = 10, .y = GRID_HEIGHT - 1 };
     snake.direction = .down;
-    try expectEqual(@as(?Position, null), snake.next());
+    try expectEqual(@as(?Position, null), nextPos(snake.direction, snake.body.items[0]));
 
     // Left off the first column.
     snake.body.items[0] = .{ .x = 0, .y = 10 };
     snake.direction = .left;
-    try expectEqual(@as(?Position, null), snake.next());
+    try expectEqual(@as(?Position, null), nextPos(snake.direction, snake.body.items[0]));
 
     // Right off the last column.
     snake.body.items[0] = .{ .x = GRID_WIDTH - 1, .y = 10 };
     snake.direction = .right;
-    try expectEqual(@as(?Position, null), snake.next());
+    try expectEqual(@as(?Position, null), nextPos(snake.direction, snake.body.items[0]));
 }
 
 test "next returns the adjacent cell for interior moves" {
@@ -398,13 +446,13 @@ test "next returns the adjacent cell for interior moves" {
     snake.body.items[0] = .{ .x = 10, .y = 10 };
 
     snake.direction = .up;
-    try expectEqual(@as(?Position, .{ .x = 10, .y = 9 }), snake.next());
+    try expectEqual(@as(?Position, .{ .x = 10, .y = 9 }), nextPos(snake.direction, snake.body.items[0]));
     snake.direction = .down;
-    try expectEqual(@as(?Position, .{ .x = 10, .y = 11 }), snake.next());
+    try expectEqual(@as(?Position, .{ .x = 10, .y = 11 }), nextPos(snake.direction, snake.body.items[0]));
     snake.direction = .left;
-    try expectEqual(@as(?Position, .{ .x = 9, .y = 10 }), snake.next());
+    try expectEqual(@as(?Position, .{ .x = 9, .y = 10 }), nextPos(snake.direction, snake.body.items[0]));
     snake.direction = .right;
-    try expectEqual(@as(?Position, .{ .x = 11, .y = 10 }), snake.next());
+    try expectEqual(@as(?Position, .{ .x = 11, .y = 10 }), nextPos(snake.direction, snake.body.items[0]));
 }
 
 test "contains reports head, body, and misses" {
@@ -415,9 +463,9 @@ test "contains reports head, body, and misses" {
     snake.body.items[0] = .{ .x = 32, .y = 16 }; // head
     try snake.body.append(gpa, .{ .x = 33, .y = 16 }); // a body segment
 
-    try expect(snake.contains(.{ .x = 32, .y = 16 })); // head hit
-    try expect(snake.contains(.{ .x = 33, .y = 16 })); // body hit
-    try expect(!snake.contains(.{ .x = 0, .y = 0 })); // miss
+    try expect(bodyContains(snake.body.items, .{ .x = 32, .y = 16 })); // head hit
+    try expect(bodyContains(snake.body.items, .{ .x = 33, .y = 16 })); // body hit
+    try expect(!bodyContains(snake.body.items, .{ .x = 0, .y = 0 })); // miss
 }
 
 test "step into the wall annotates snake is dead and hit a wall" {
@@ -425,7 +473,7 @@ test "step into the wall annotates snake is dead and hit a wall" {
     var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
-    game.snakes[0].direction = .left; // next() is null off the left edge
+    game.snakes.items(.direction)[0] = .left; // next() is null off the left edge
     game.checkSelfCollision();
 
     const death_res = game.deaths[0];
@@ -439,12 +487,13 @@ test "step into own body ends the game" {
     defer game.deinit(gpa);
 
     // A 2x2 loop: head at {10,10} moving right lands on the tail at {11,10}.
-    game.snakes[0].clearBody();
-    try game.snakes[0].body.append(gpa, .{ .x = 10, .y = 10 }); // head
-    try game.snakes[0].body.append(gpa, .{ .x = 10, .y = 11 });
-    try game.snakes[0].body.append(gpa, .{ .x = 11, .y = 11 });
-    try game.snakes[0].body.append(gpa, .{ .x = 11, .y = 10 }); // tail (the cell we hit)
-    game.snakes[0].direction = .right;
+    const body = &game.snakes.items(.body)[0];
+    body.clearRetainingCapacity();
+    try body.append(gpa, .{ .x = 10, .y = 10 }); // head
+    try body.append(gpa, .{ .x = 10, .y = 11 });
+    try body.append(gpa, .{ .x = 11, .y = 11 });
+    try body.append(gpa, .{ .x = 11, .y = 10 }); // tail (the cell we hit)
+    game.snakes.items(.direction)[0] = .right;
     game.checkSelfCollision();
 
     const death_res = game.deaths[0];
@@ -505,8 +554,8 @@ test "simple game tick test" {
 
     try game.tick(gpa);
 
-    try std.testing.expectEqual(2, game.snakes[0].len());
-    try std.testing.expectEqual(2, game.snakes[1].len());
+    try std.testing.expectEqual(2, game.snakes.items(.body)[0].items.len);
+    try std.testing.expectEqual(2, game.snakes.items(.body)[1].items.len);
 }
 
 test "game tick annotate snake is dead" {
@@ -514,11 +563,11 @@ test "game tick annotate snake is dead" {
     var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
-    game.snakes[0].body.items[0] = .{ .x = 0, .y = 16 };
-    game.snakes[0].direction = .left; // next() is null off the left edge
+    game.snakes.items(.body)[0].items[0] = .{ .x = 0, .y = 16 };
+    game.snakes.items(.direction)[0] = .left; // next() is null off the left edge
     try game.tick(gpa);
 
-    try expect(game.snakes[0].is_dead);
+    try expect(game.snakes.items(.is_dead)[0]);
 }
 
 test "game tick snakes dies check if dead snake body is gone" {
@@ -526,13 +575,13 @@ test "game tick snakes dies check if dead snake body is gone" {
     var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
-    game.snakes[0].body.items[0] = .{ .x = 0, .y = 16 };
-    game.snakes[0].direction = .left; // next() is null off the left edge
+    game.snakes.items(.body)[0].items[0] = .{ .x = 0, .y = 16 };
+    game.snakes.items(.direction)[0] = .left; // next() is null off the left edge
     try game.tick(gpa);
     try game.tick(gpa);
 
-    try expectEqual(0, game.snakes[0].len());
-    try expect(!game.snakes[1].is_dead);
+    try expectEqual(0, game.snakes.items(.body)[0].items.len);
+    try expect(!game.snakes.items(.is_dead)[1]);
 }
 
 test "collision with other snakes body" {
@@ -540,23 +589,23 @@ test "collision with other snakes body" {
     var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
-    var snake_a = &game.snakes[0];
-    var snake_b = &game.snakes[1];
+    const bodies = game.snakes.items(.body);
+    const dirs = game.snakes.items(.direction);
 
-    snake_a.body.items[0] = .{ .x = 0, .y = 0 };
-    try snake_a.body.append(gpa, .{ .x = 0, .y = 1 });
-    try snake_a.body.append(gpa, .{ .x = 0, .y = 2 });
-    snake_a.direction = .right;
+    bodies[0].items[0] = .{ .x = 0, .y = 0 };
+    try bodies[0].append(gpa, .{ .x = 0, .y = 1 });
+    try bodies[0].append(gpa, .{ .x = 0, .y = 2 });
+    dirs[0] = .right;
 
-    snake_b.body.items[0] = .{ .x = 1, .y = 1 };
-    try snake_b.body.append(gpa, .{ .x = 2, .y = 1 });
-    try snake_b.body.append(gpa, .{ .x = 3, .y = 1 });
-    snake_b.direction = .left;
+    bodies[1].items[0] = .{ .x = 1, .y = 1 };
+    try bodies[1].append(gpa, .{ .x = 2, .y = 1 });
+    try bodies[1].append(gpa, .{ .x = 3, .y = 1 });
+    dirs[1] = .left;
 
     try game.tick(gpa);
 
-    try std.testing.expect(snake_b.is_dead);
-    try std.testing.expectEqual(0, snake_b.len());
+    try std.testing.expect(game.snakes.items(.is_dead)[1]);
+    try std.testing.expectEqual(0, bodies[1].items.len);
 }
 
 test "collision with other snakes body adds to kill count" {
@@ -564,22 +613,22 @@ test "collision with other snakes body adds to kill count" {
     var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
-    var snake_a = &game.snakes[0];
-    var snake_b = &game.snakes[1];
+    const bodies = game.snakes.items(.body);
+    const dirs = game.snakes.items(.direction);
 
-    snake_a.body.items[0] = .{ .x = 0, .y = 0 };
-    try snake_a.body.append(gpa, .{ .x = 0, .y = 1 });
-    try snake_a.body.append(gpa, .{ .x = 0, .y = 2 });
-    snake_a.direction = .right;
+    bodies[0].items[0] = .{ .x = 0, .y = 0 };
+    try bodies[0].append(gpa, .{ .x = 0, .y = 1 });
+    try bodies[0].append(gpa, .{ .x = 0, .y = 2 });
+    dirs[0] = .right;
 
-    snake_b.body.items[0] = .{ .x = 1, .y = 1 };
-    try snake_b.body.append(gpa, .{ .x = 2, .y = 1 });
-    try snake_b.body.append(gpa, .{ .x = 3, .y = 1 });
-    snake_b.direction = .left;
+    bodies[1].items[0] = .{ .x = 1, .y = 1 };
+    try bodies[1].append(gpa, .{ .x = 2, .y = 1 });
+    try bodies[1].append(gpa, .{ .x = 3, .y = 1 });
+    dirs[1] = .left;
 
     try game.tick(gpa);
 
-    try std.testing.expectEqual(1, snake_a.kills);
+    try std.testing.expectEqual(1, game.snakes.items(.kills)[0]);
 }
 
 test "collision h2h test" {
@@ -587,21 +636,22 @@ test "collision h2h test" {
     var game = try TronGame.init(gpa);
     defer game.deinit(gpa);
 
-    var snake_a = &game.snakes[0];
-    var snake_b = &game.snakes[1];
+    const bodies = game.snakes.items(.body);
+    const dirs = game.snakes.items(.direction);
+    const kills = game.snakes.items(.kills);
 
-    snake_b.kills = 1;
+    kills[1] = 1;
 
-    snake_a.body.items[0] = .{ .x = 0, .y = 0 };
-    snake_a.direction = .right;
+    bodies[0].items[0] = .{ .x = 0, .y = 0 };
+    dirs[0] = .right;
 
-    snake_b.body.items[0] = .{ .x = 2, .y = 0 };
-    snake_b.direction = .left;
+    bodies[1].items[0] = .{ .x = 2, .y = 0 };
+    dirs[1] = .left;
 
     try game.tick(gpa);
 
-    try std.testing.expect(snake_a.is_dead);
-    try std.testing.expectEqual(2, snake_b.kills);
+    try std.testing.expect(game.snakes.items(.is_dead)[0]);
+    try std.testing.expectEqual(2, game.snakes.items(.kills)[1]);
 }
 
 test "classic snake movement" {
@@ -700,5 +750,5 @@ test "classic game spawns food free from snakes body" {
     }
     const new_food = game.spawnFood(rand).?;
 
-    try std.testing.expect(!game.snake.contains(new_food.pos));
+    try std.testing.expect(!bodyContains(game.snake.body.items, new_food.pos));
 }
