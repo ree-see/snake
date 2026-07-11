@@ -1,9 +1,10 @@
 const std = @import("std");
-const core = @import("core.zig");
-const ws = @import("websocket.zig");
 const tgpa = std.testing.allocator;
 const t = std.testing;
 const tio = std.testing.io;
+
+const core = @import("core.zig");
+const ws = @import("websocket.zig");
 
 pub const SessionManager = struct {
     mutex: std.Io.Mutex,
@@ -141,11 +142,29 @@ pub const Session = struct {
         self.queue.deinit(self.alloc);
     }
 
-    pub fn canJoin(self: *Session) bool {
+    pub fn canJoin(self: *Session, io: std.Io) SessionError!bool {
+        self.mutex.lock(io) catch SessionError.LockedMutex;
+        self.mutex.unlock(io);
         return self.game.state == .lobby and !self.isFull();
     }
 
-    pub fn drain(self: *Session) void {
+    pub fn canJoinLocked(self: *Session) bool {
+        return self.game.state == .lobby and !self.isFullLocked();
+    }
+
+    pub fn drain(self: *Session, io: std.Io) SessionError!void {
+        self.mutex.lock(io) catch return Session.SessionError.LockedMutex;
+        defer self.mutex.unlock(io);
+        while (true) {
+            if (self.queue.pop()) |m| {
+                const s = self.game.snakes.slice();
+                const prev_dir = s.items(.direction)[m.idx];
+                s.items(.direction)[m.idx] = core.setDirection(prev_dir, m.key_pressed);
+            } else break;
+        }
+    }
+
+    pub fn drainLocked(self: *Session) void {
         while (true) {
             if (self.queue.pop()) |m| {
                 const s = self.game.snakes.slice();
@@ -170,7 +189,22 @@ pub const Session = struct {
         return SessionError.LobbyFull;
     }
 
-    pub fn isFull(self: *Session) bool {
+    pub fn addPlayerLocked(self: *Session, w: *std.Io.Writer) usize {
+        for (self.players, 0..) |player, i| {
+            if (player != null) continue;
+            const new_player = Player.new(self.count, w);
+            self.players[i] = new_player;
+            self.players[i].?.assignSnake(i);
+            self.count += 1;
+            return i;
+        }
+
+        return SessionError.LobbyFull;
+    }
+
+    pub fn isFull(self: *Session, io: std.Io) SessionError!bool {
+        self.mutex.lock(io) catch return SessionError.LockedMutex;
+        defer self.mutex.unlock(io);
         for (self.players) |player| {
             if (player == null) {
                 return false;
@@ -179,10 +213,19 @@ pub const Session = struct {
         return true;
     }
 
-    pub fn startGame(self: *Session) !void {
+    pub fn isFullLocked(self: *Session) bool {
+        for (self.players) |player| {
+            if (player == null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    pub fn startGame(self: *Session, io: std.Io) SessionError!void {
         self.game.state = .running;
         while (self.game.state != .over) {
-            self.drain();
+            try self.drain(io);
             self.game.tick(self.alloc) catch |err| {
                 std.debug.print("{}", .{err});
                 self.endGame();
@@ -214,7 +257,7 @@ pub const Session = struct {
 
     pub fn run(self: *Session, io: std.Io) !void {
         try self.startLobby(io);
-        self.startGame();
+        self.startGame(io);
     }
 };
 
@@ -251,7 +294,13 @@ const MessageQueue = struct {
     }
 
     // add new message to the back of the queue
-    pub fn push(self: *MessageQueue, alloc: std.mem.Allocator, message: Message) !void {
+    pub fn push(self: *MessageQueue, alloc: std.mem.Allocator, io: std.Io, message: Message) Session.SessionError!void {
+        self.mutex.lock(io) catch return Session.SessionError.LockedMutex;
+        defer self.mutex.unlock(io);
+        try self.queue.pushBack(alloc, message);
+    }
+
+    pub fn pushLocked(self: *MessageQueue, alloc: std.mem.Allocator, message: Message) !void {
         try self.queue.pushBack(alloc, message);
     }
 
@@ -272,7 +321,7 @@ test "drain changes the direction of snakes" {
     try s.queue.push(tgpa, .{ .idx = 2, .key_pressed = 107 });
     try s.queue.push(tgpa, .{ .idx = 1, .key_pressed = 108 });
     try s.queue.push(tgpa, .{ .idx = 4, .key_pressed = 107 });
-    s.drain();
+    try s.drain(tio);
 
     const snakes = s.game.snakes.slice();
     try t.expectEqual(.down, snakes.items(.direction)[2]);
@@ -309,7 +358,7 @@ test "drain messages in queue" {
     try s.queue.push(tgpa, .{ .idx = 2, .key_pressed = 107 });
     try s.queue.push(tgpa, .{ .idx = 1, .key_pressed = 107 });
     try s.queue.push(tgpa, .{ .idx = 4, .key_pressed = 108 });
-    s.drain();
+    try s.drain(tio);
 
     try t.expectEqual(0, s.queue.len());
 }
