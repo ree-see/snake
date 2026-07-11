@@ -3,3 +3,4 @@ zig-out/
 .claude/
 CLAUDE.md
 .DS_Store
+.pi/
