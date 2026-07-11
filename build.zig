@@ -5,12 +5,18 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const core_mod = b.createModule(.{ .root_source_file = b.path("src/core.zig"), .target = target, .optimize = optimize });
+    const ws_mod = b.createModule(.{ .root_source_file = b.path("src/websocket.zig"), .target = target, .optimize = optimize });
+    const session_mod = b.createModule(.{ .root_source_file = b.path("src/session.zig"), .target = target, .optimize = optimize });
 
     const server = b.addExecutable(.{ .name = "game-server", .root_module = b.createModule(.{
         .root_source_file = b.path("src/server.zig"),
         .target = target,
         .optimize = optimize,
     }) });
+
+    server.root_module.addImport("core", core_mod);
+    server.root_module.addImport("websocket", ws_mod);
+    server.root_module.addImport("session", session_mod);
 
     b.installArtifact(server);
 
@@ -24,6 +30,7 @@ pub fn build(b: *std.Build) void {
     });
 
     tui.root_module.addImport("core", core_mod);
+    tui.is_linking_libc = true;
 
     b.installArtifact(tui);
 
@@ -61,7 +68,7 @@ pub fn build(b: *std.Build) void {
     const wasm_step = b.step("wasm", "Create wasm bin");
     wasm_step.dependOn(&b.addInstallArtifact(wasm, .{}).step);
 
-    // `zig build test` -- run the `test {}` blocks in src/main.zig.
+    // `zig build test` -- run the `test {}` blocks in src/tui.zig.
     const exe_tests = b.addTest(.{
         .root_module = tui.root_module,
     });

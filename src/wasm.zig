@@ -14,15 +14,23 @@ export fn tick() void {
 }
 
 export fn setDirection(idx: usize, key_press: u8) void {
-    game.snakes[idx].setDirection(key_press);
+    const s = game.snakes.slice();
+    const dirs = s.items(.direction);
+    const prev_dir = dirs[idx];
+    dirs[idx] = core.setDirection(prev_dir, key_press);
 }
 
 export fn getSnakeLength(idx: usize) usize {
-    return game.snakes[idx].len();
+    const s = game.snakes.slice();
+    const bodies = s.items(.body);
+    return bodies[idx].items.len;
 }
 
 export fn getSnakePtr(idx: usize) usize {
-    return @intFromPtr(game.snakes[idx].body.items.ptr);
+    const s = game.snakes.slice();
+    const bodies = s.items(.body);
+
+    return @intFromPtr(bodies[idx].items.ptr);
 }
 
 export fn getGameState() u8 {

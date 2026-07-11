@@ -94,6 +94,7 @@ pub fn disableRawMode(term: termios) !void {
 
 pub fn termSize() std.posix.winsize {
     var ws: std.posix.winsize = undefined;
+    // when calling this make sure to add .is_linking_libc to build.zig
     _ = std.c.ioctl(STDIN_FILENO, @intCast(std.c.T.IOCGWINSZ), &ws);
     return ws;
 }
@@ -132,7 +133,8 @@ pub fn main(init: std.process.Init) !void {
         const n = try std.posix.read(STDIN_FILENO, &buf);
         if (n > 0) {
             if (buf[0] == '\x1b') break;
-            game.snake.setDirection(buf[0]);
+            const prev_dir = game.snake.direction;
+            game.snake.direction = core.setDirection(prev_dir, buf[0]);
         }
         try game.tick(gpa, rand);
         try render(&grid, &game, &stdout_writer);
