@@ -6,8 +6,8 @@ pub fn build(b: *std.Build) void {
 
     const core_mod = b.createModule(.{ .root_source_file = b.path("src/core.zig"), .target = target, .optimize = optimize });
 
-    const server = b.addExecutable(.{ .name = "http-server", .root_module = b.createModule(.{
-        .root_source_file = b.path("src/http.zig"),
+    const server = b.addExecutable(.{ .name = "game-server", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/server.zig"),
         .target = target,
         .optimize = optimize,
     }) });
@@ -46,7 +46,7 @@ pub fn build(b: *std.Build) void {
     const server_cmd = b.addRunArtifact(server);
     server_cmd.step.dependOn(b.getInstallStep());
 
-    const server_step = b.step("server", "launch the http server");
+    const server_step = b.step("server", "launch the server");
     server_step.dependOn(&server_cmd.step);
 
     // `zig build run` -- launch the interactive TUI (ESC quits).
