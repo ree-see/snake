@@ -31,6 +31,8 @@ const COLORS = ["#56d364", "#f85149", "#58a6ff", "#d29922", "#bc8cff"];
 const canvas = document.getElementById("board");
 const ctx = canvas.getContext("2d");
 const overlay = document.getElementById("overlay");
+const overlayTitle = document.getElementById("overlay-title");
+const overlayBody = document.getElementById("overlay-body");
 const statusEl = document.getElementById("status");
 const errorEl = document.getElementById("error");
 
@@ -53,6 +55,16 @@ function connect() {
   };
 
   ws.onmessage = (event) => {
+    // Text frames carry JSON control messages (countdown, game result).
+    // Binary frames carry everything performance-sensitive (idx, deltas).
+    // The two never collide -- WebSocket tags every frame with its opcode,
+    // so `event.data` arrives as a string for text and an ArrayBuffer (per
+    // `ws.binaryType`) for binary, regardless of byte length.
+    if (typeof event.data === "string") {
+      handleControlMessage(JSON.parse(event.data));
+      return;
+    }
+
     const bytes = new Uint8Array(event.data);
 
     if (!gotIdx) {
@@ -123,6 +135,13 @@ function drawSnake(i) {
     ctx.strokeStyle = "#e6edf3";
     ctx.lineWidth = 1;
     ctx.strokeRect(head.x * CELL + 0.5, head.y * CELL + 0.5, CELL - 2, CELL - 2);
+  }
+}
+
+function handleControlMessage(msg) {
+  if (typeof msg.countdown === "number") {
+    overlayTitle.textContent = `starting in ${msg.countdown}...`;
+    overlayBody.textContent = "get ready";
   }
 }
 

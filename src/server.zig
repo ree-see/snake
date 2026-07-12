@@ -32,7 +32,7 @@ const Connection = struct {
     }
 };
 
-// TODO: refactor args into a context struct
+// TODO: refactor function
 fn handleWs(key: []const u8, io: std.Io, r: *std.Io.Reader, w: *std.Io.Writer, s: *session.Session) !void {
     const computed_key = ws.computeAcceptKey(key);
     try w.print("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {s}\r\n", .{&computed_key});
@@ -50,7 +50,7 @@ fn handleWs(key: []const u8, io: std.Io, r: *std.Io.Reader, w: *std.Io.Writer, s
     // frame while loop
     while (true) {
         const byte0 = r.takeByte() catch break; // [FIN 1bit][RSV 3bits][opcode 4bits]
-        const byte1 = try r.takeByte(); // [MASK 1bit][paylaod-len 7bits]
+        const byte1 = r.takeByte() catch break; // [MASK 1bit][paylaod-len 7bits]
 
         const opcode = byte0 & 0x0F; // what kind of frame
         _ = opcode; // will use later
@@ -59,17 +59,26 @@ fn handleWs(key: []const u8, io: std.Io, r: *std.Io.Reader, w: *std.Io.Writer, s
             continue;
         }
         const length = byte1 & 0x7F; // 7-bit length if 126 -> next 2 bytes if 127 the next 8 bytes
-        const masking_key = try r.takeArray(4); // key to unmask the bit in the payload bytes
-        const payload = try r.take(length); // payload bytes
+        const masking_key = r.takeArray(4) catch break; // key to unmask the bit in the payload bytes
+        const payload = r.take(length) catch break; // payload bytes
         ws.unmaskBits(payload, masking_key.*);
         // try writeFrame(w, payload);
-        try s.pushMessage(io, .{ .idx = idx, .key_pressed = payload[0] });
+        s.pushMessage(io, .{ .idx = idx, .key_pressed = payload[0] }) catch |err| {
+            std.debug.print("{}", .{err});
+        };
     }
+
+    s.removePlayer(io, idx) catch |err| {
+        std.debug.print("{}", .{err});
+    };
+    std.debug.print("Player {} disconnected", .{idx});
     return;
 }
 
 pub fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void {
-    defer conn.deinit();
+    defer {
+        conn.deinit();
+    }
     while (true) {
         var w_buf: [256]u8 = undefined;
         var writer = conn.stream.writer(conn.io, &w_buf);
@@ -110,7 +119,9 @@ pub fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const addr = std.Io.net.IpAddress{ .ip4 = .loopback(8080) };
-    var listener = try std.Io.net.IpAddress.listen(&addr, io, .{});
+    var listener = try std.Io.net.IpAddress.listen(&addr, io, .{
+        .reuse_address = true,
+    });
     const gpa = init.gpa;
     var sman = session.SessionManager.init();
     defer sman.deinit(gpa);

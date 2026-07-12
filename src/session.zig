@@ -1,5 +1,5 @@
 const std = @import("std");
-const tgpa = std.testing.allocator;
+const talloc = std.testing.allocator;
 const t = std.testing;
 const tio = std.testing.io;
 
@@ -86,32 +86,32 @@ pub const SessionManager = struct {
 
 test "able to find sessions lobby that's not full" {
     var sman = SessionManager.init();
-    defer sman.deinit(tgpa);
+    defer sman.deinit(talloc);
 
-    const a_ptr = try tgpa.create(Session);
-    a_ptr.* = try Session.init(tgpa);
-    try sman.sessions.append(tgpa, a_ptr);
-    const open_session = sman.findOrCreateSession(tgpa, tio);
+    const a_ptr = try talloc.create(Session);
+    a_ptr.* = try Session.init(talloc);
+    try sman.sessions.append(talloc, a_ptr);
+    const open_session = sman.findOrCreateSession(talloc, tio);
 
     try t.expectEqual(a_ptr, open_session);
 }
 
 test "add new session" {
     var sman = SessionManager.init();
-    defer sman.deinit(tgpa);
+    defer sman.deinit(talloc);
 
-    try sman.addSession(tgpa, tio);
+    try sman.addSession(talloc, tio);
 
     try t.expectEqual(sman.sessions.items.len, 1);
 }
 
 test "remove new session" {
     var sman = SessionManager.init();
-    defer sman.deinit(tgpa);
+    defer sman.deinit(talloc);
 
-    try sman.addSession(tgpa, tio);
+    try sman.addSession(talloc, tio);
     const s = sman.sessions.items[0];
-    try sman.removeSession(tgpa, tio, s);
+    try sman.removeSession(talloc, tio, s);
 
     try t.expectEqual(sman.sessions.items.len, 0);
 }
@@ -209,6 +209,21 @@ pub const Session = struct {
         return SessionError.LobbyFull;
     }
 
+    pub fn removePlayer(self: *Session, io: std.Io, players_idx: usize) SessionError!void {
+        self.mutex.lock(io) catch return SessionError.LockedMutex;
+        defer self.mutex.unlock(io);
+        self.players[players_idx] = null;
+    }
+
+    pub fn removePlayerLocked(self: *Session, players_idx: usize) void {
+        for (self.players, 0..) |_, i| {
+            if (players_idx == i) {
+                self.players[i] = null;
+                break;
+            } else continue;
+        }
+    }
+
     pub fn isFull(self: *Session, io: std.Io) SessionError!bool {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
@@ -258,17 +273,29 @@ pub const Session = struct {
         self.game.state = .over;
     }
 
-    pub fn startLobby(self: *Session, io: std.Io) !void {
+    pub fn startLobby(self: *Session, io: std.Io, countdown: usize) !void {
         while (!try self.isFull(io)) {
             std.Io.sleep(io, std.Io.Duration.fromMilliseconds(500), std.Io.Clock.awake) catch return;
         } else {
-            std.Io.sleep(io, std.Io.Duration.fromSeconds(1), std.Io.Clock.awake) catch return;
+            for (1..countdown + 1) |i| {
+                std.Io.sleep(io, std.Io.Duration.fromSeconds(1), std.Io.Clock.awake) catch return;
+                var buf: [20]u8 = undefined;
+                const msg = try std.fmt.bufPrint(&buf, "{{ \"countdown\": {d} }}", .{countdown + 1 - i});
+                for (self.players) |maybe_player| {
+                    const p = maybe_player orelse continue;
+                    ws.writeFrame(p.writer, msg, true) catch |err| {
+                        std.debug.print("{}", .{err});
+                        continue;
+                    };
+                }
+            }
+
             self.game.state = .running;
         }
     }
 
     pub fn run(self: *Session, io: std.Io) !void {
-        try self.startLobby(io);
+        try self.startLobby(io, 20);
         try self.startGame(io);
     }
 
@@ -335,12 +362,12 @@ const MessageQueue = struct {
 };
 
 test "drain changes the direction of snakes" {
-    var s = try Session.init(tgpa);
+    var s = try Session.init(talloc);
     defer s.deinit();
 
-    try s.queue.push(tgpa, .{ .idx = 2, .key_pressed = 107 });
-    try s.queue.push(tgpa, .{ .idx = 1, .key_pressed = 108 });
-    try s.queue.push(tgpa, .{ .idx = 4, .key_pressed = 107 });
+    try s.queue.push(talloc, .{ .idx = 2, .key_pressed = 107 });
+    try s.queue.push(talloc, .{ .idx = 1, .key_pressed = 108 });
+    try s.queue.push(talloc, .{ .idx = 4, .key_pressed = 107 });
     try s.drain(tio);
 
     const snakes = s.game.snakes.slice();
@@ -350,41 +377,41 @@ test "drain changes the direction of snakes" {
 }
 
 test "pop message off of queue" {
-    var queue = MessageQueue.init(tgpa, 8);
-    defer queue.deinit(tgpa);
+    var queue = MessageQueue.init(talloc, 8);
+    defer queue.deinit(talloc);
 
-    try queue.push(tgpa, .{ .idx = 2, .key_pressed = 107 });
-    try queue.push(tgpa, .{ .idx = 1, .key_pressed = 107 });
-    try queue.push(tgpa, .{ .idx = 4, .key_pressed = 108 });
+    try queue.push(talloc, .{ .idx = 2, .key_pressed = 107 });
+    try queue.push(talloc, .{ .idx = 1, .key_pressed = 107 });
+    try queue.push(talloc, .{ .idx = 4, .key_pressed = 108 });
 
     try t.expectEqual(2, queue.pop().?.idx);
 }
 
 test "push message to queue" {
-    var queue = MessageQueue.init(tgpa, 8);
-    defer queue.deinit(tgpa);
+    var queue = MessageQueue.init(talloc, 8);
+    defer queue.deinit(talloc);
 
-    try queue.push(tgpa, .{ .idx = 2, .key_pressed = 107 }); // 1
-    try queue.push(tgpa, .{ .idx = 1, .key_pressed = 107 }); // 2
-    try queue.push(tgpa, .{ .idx = 4, .key_pressed = 108 }); // 3
+    try queue.push(talloc, .{ .idx = 2, .key_pressed = 107 }); // 1
+    try queue.push(talloc, .{ .idx = 1, .key_pressed = 107 }); // 2
+    try queue.push(talloc, .{ .idx = 4, .key_pressed = 108 }); // 3
 
     try t.expectEqual(3, queue.len());
 }
 
 test "drain messages in queue" {
-    var s = try Session.init(tgpa);
+    var s = try Session.init(talloc);
     defer s.deinit();
 
-    try s.queue.push(tgpa, .{ .idx = 2, .key_pressed = 107 });
-    try s.queue.push(tgpa, .{ .idx = 1, .key_pressed = 107 });
-    try s.queue.push(tgpa, .{ .idx = 4, .key_pressed = 108 });
+    try s.queue.push(talloc, .{ .idx = 2, .key_pressed = 107 });
+    try s.queue.push(talloc, .{ .idx = 1, .key_pressed = 107 });
+    try s.queue.push(talloc, .{ .idx = 4, .key_pressed = 108 });
     try s.drain(tio);
 
     try t.expectEqual(0, s.queue.len());
 }
 
 test "is lobby full" {
-    var s = try Session.init(tgpa);
+    var s = try Session.init(talloc);
     defer s.deinit();
 
     var t_buf: [256]u8 = undefined;
@@ -400,7 +427,7 @@ test "is lobby full" {
 }
 
 test "is lobby full error" {
-    var s = try Session.init(tgpa);
+    var s = try Session.init(talloc);
     defer s.deinit();
 
     var t_buf: [256]u8 = undefined;
@@ -418,20 +445,41 @@ test "is lobby full error" {
 }
 
 test "is lobby full and game switched to running" {
-    var s = try Session.init(tgpa);
+    var s = try Session.init(talloc);
+    defer s.deinit();
+
+    var t_buf1: [256]u8 = undefined;
+    var t_w1 = std.Io.Writer.fixed(&t_buf1);
+    var t_buf2: [256]u8 = undefined;
+    var t_w2 = std.Io.Writer.fixed(&t_buf2);
+    var t_buf3: [256]u8 = undefined;
+    var t_w3 = std.Io.Writer.fixed(&t_buf3);
+    var t_buf4: [256]u8 = undefined;
+    var t_w4 = std.Io.Writer.fixed(&t_buf4);
+    var t_buf5: [256]u8 = undefined;
+    var t_w5 = std.Io.Writer.fixed(&t_buf5);
+
+    _ = try s.addPlayer(tio, &t_w1);
+    _ = try s.addPlayer(tio, &t_w2);
+    _ = try s.addPlayer(tio, &t_w3);
+    _ = try s.addPlayer(tio, &t_w4);
+    _ = try s.addPlayer(tio, &t_w5);
+
+    try s.startLobby(tio, 1);
+    try t.expectEqual(s.game.state, core.GameState.running);
+}
+
+test "remove player and replace idx with null" {
+    var s = try Session.init(talloc);
     defer s.deinit();
 
     var t_buf: [256]u8 = undefined;
     var t_w = std.Io.Writer.fixed(&t_buf);
 
     _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
+    try s.removePlayer(tio, 0);
 
-    try s.startLobby(tio);
-    try t.expectEqual(s.game.state, core.GameState.running);
+    try t.expect((s.players[0] == null));
 }
 
 fn test_addPlayer(arr: *[8]Session.SessionError!usize, s: *Session, count: usize) void {
@@ -444,7 +492,7 @@ fn test_addPlayer(arr: *[8]Session.SessionError!usize, s: *Session, count: usize
 // test never proved pre locking the session for addPlayer caused race cond
 test "8 players racing to fill one session" {
     for (0..100) |_| {
-        var s = try Session.init(tgpa);
+        var s = try Session.init(talloc);
         defer s.deinit();
         var actual: [8]Session.SessionError!usize = undefined;
         var threads: [8]std.Thread = undefined;
