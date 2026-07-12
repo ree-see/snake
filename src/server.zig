@@ -1,6 +1,6 @@
 const std = @import("std");
-const session = @import("session.zig");
-const ws = @import("websocket.zig");
+const session = @import("session");
+const ws = @import("websocket");
 const http = std.http;
 const crypto = std.crypto;
 const base64 = std.base64;
@@ -60,7 +60,7 @@ pub fn handleWs(key: []const u8, io: std.Io, r: *std.Io.Reader, w: *std.Io.Write
         const payload = try r.take(length); // payload bytes
         ws.unmaskBits(payload, masking_key.*);
         // try writeFrame(w, payload);
-        try s.queue.push(s.alloc, .{ .idx = idx, .key_pressed = payload[0] });
+        try s.pushMessage(io, .{ .idx = idx, .key_pressed = payload[0] });
     }
     return;
 }

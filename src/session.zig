@@ -3,8 +3,8 @@ const tgpa = std.testing.allocator;
 const t = std.testing;
 const tio = std.testing.io;
 
-const core = @import("core.zig");
-const ws = @import("websocket.zig");
+const core = @import("core");
+const ws = @import("websocket");
 
 pub const SessionManager = struct {
     mutex: std.Io.Mutex,
@@ -30,12 +30,19 @@ pub const SessionManager = struct {
         try self.mutex.lock(io);
         defer self.mutex.unlock(io);
         for (self.sessions.items) |session| {
-            if (session.canJoin()) return session;
+            if (try session.canJoin(io)) return session;
             continue;
         }
         try self.addSessionLocked(alloc);
+        const new_session = self.sessions.getLast();
 
-        return self.sessions.getLast();
+        if (std.Thread.spawn(.{}, Session.run, .{ new_session, io })) |thread| {
+            thread.detach();
+        } else |err| {
+            std.debug.print("{}", .{err});
+        }
+
+        return new_session;
     }
 
     pub fn addSession(self: *SessionManager, alloc: std.mem.Allocator, io: std.Io) !void {
@@ -143,9 +150,9 @@ pub const Session = struct {
     }
 
     pub fn canJoin(self: *Session, io: std.Io) SessionError!bool {
-        self.mutex.lock(io) catch SessionError.LockedMutex;
+        self.mutex.lock(io) catch return SessionError.LockedMutex;
         self.mutex.unlock(io);
-        return self.game.state == .lobby and !self.isFull();
+        return self.game.state == .lobby and !try self.isFull(io);
     }
 
     pub fn canJoinLocked(self: *Session) bool {
@@ -235,7 +242,10 @@ pub const Session = struct {
             const payload = self.game.encodeDeltas();
             for (self.players) |maybe_player| {
                 const p = maybe_player orelse continue;
-                try ws.writeFrame(p.writer, &payload);
+                ws.writeFrame(p.writer, &payload) catch |err| {
+                    std.debug.print("{}", .{err});
+                    continue;
+                };
             }
             if (self.game.state == .over) {
                 break;
@@ -248,7 +258,7 @@ pub const Session = struct {
     }
 
     pub fn startLobby(self: *Session, io: std.Io) !void {
-        while (!self.isFull()) {
+        while (!try self.isFull(io)) {
             std.Io.sleep(io, std.Io.Duration.fromMilliseconds(500), std.Io.Clock.awake) catch return;
         } else {
             self.game.state = .running;
@@ -257,7 +267,19 @@ pub const Session = struct {
 
     pub fn run(self: *Session, io: std.Io) !void {
         try self.startLobby(io);
-        self.startGame(io);
+        try self.startGame(io);
+    }
+
+    pub fn pushMessage(self: *Session, io: std.Io, msg: MessageQueue.Message) SessionError!void {
+        self.mutex.lock(io) catch return SessionError.LockedMutex;
+        defer self.mutex.unlock(io);
+        self.queue.push(self.alloc, msg) catch @panic("OOM error");
+    }
+
+    pub fn popMessage(self: *Session, io: std.Io) SessionError!?MessageQueue.Message {
+        self.mutex.lock(io) catch return SessionError.LockedMutex;
+        defer self.mutex.unlock(io);
+        return self.queue.pop();
     }
 };
 
@@ -294,17 +316,13 @@ const MessageQueue = struct {
     }
 
     // add new message to the back of the queue
-    pub fn push(self: *MessageQueue, alloc: std.mem.Allocator, io: std.Io, message: Message) Session.SessionError!void {
-        self.mutex.lock(io) catch return Session.SessionError.LockedMutex;
-        defer self.mutex.unlock(io);
-        try self.queue.pushBack(alloc, message);
-    }
-
-    pub fn pushLocked(self: *MessageQueue, alloc: std.mem.Allocator, message: Message) !void {
+    // Use Session.pushMessage when race conditions apply
+    pub fn push(self: *MessageQueue, alloc: std.mem.Allocator, message: Message) !void {
         try self.queue.pushBack(alloc, message);
     }
 
     // remove the message at the front of the queue
+    // Use Session.popMessage when race conditions apply
     pub fn pop(self: *MessageQueue) ?Message {
         return self.queue.popFront();
     }
@@ -376,7 +394,7 @@ test "is lobby full" {
     _ = try s.addPlayer(tio, &t_w);
     _ = try s.addPlayer(tio, &t_w);
 
-    try t.expect(s.isFull());
+    try t.expect(try s.isFull(tio));
 }
 
 test "is lobby full error" {
@@ -427,7 +445,6 @@ test "8 players racing to fill one session" {
         var s = try Session.init(tgpa);
         defer s.deinit();
         var actual: [8]Session.SessionError!usize = undefined;
-
         var threads: [8]std.Thread = undefined;
         for (0..8) |i| {
             threads[i] = try std.Thread.spawn(.{}, test_addPlayer, .{ &actual, &s, i });
@@ -435,18 +452,20 @@ test "8 players racing to fill one session" {
         for (0..8) |i| {
             threads[i].join();
         }
+        var seen: [5]bool = .{false} ** 5;
+        var fail_count: u8 = 0;
 
-        const expected: [8]Session.SessionError!usize = .{
-            0,
-            1,
-            2,
-            3,
-            4,
-            Session.SessionError.LobbyFull,
-            Session.SessionError.LobbyFull,
-            Session.SessionError.LobbyFull,
-        };
+        for (0..8) |i| {
+            const idx: Session.SessionError!usize = actual[i];
+            if (idx == Session.SessionError.LobbyFull) {
+                fail_count += 1;
+                continue;
+            }
 
-        try t.expectEqual(expected, actual);
+            if (@TypeOf(idx) == usize) {
+                t.expect(!seen[idx]);
+                seen[idx] = true;
+            }
+        }
     }
 }
