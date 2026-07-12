@@ -113,7 +113,7 @@ pub fn setDirection(prev_dir: Snake.Direction, key_press: u8) Snake.Direction {
     };
 }
 
-const Delta = struct {
+pub const Delta = struct {
     death: ?TronGame.DeathResult,
     nextPos: ?Position,
 

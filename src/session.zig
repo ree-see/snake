@@ -238,11 +238,12 @@ pub const Session = struct {
                 self.endGame();
             };
 
+            std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), std.Io.Clock.awake) catch return;
             // broadcast next render frame
             const payload = self.game.encodeDeltas();
             for (self.players) |maybe_player| {
                 const p = maybe_player orelse continue;
-                ws.writeFrame(p.writer, &payload) catch |err| {
+                ws.writeFrame(p.writer, &payload, false) catch |err| {
                     std.debug.print("{}", .{err});
                     continue;
                 };
@@ -261,6 +262,7 @@ pub const Session = struct {
         while (!try self.isFull(io)) {
             std.Io.sleep(io, std.Io.Duration.fromMilliseconds(500), std.Io.Clock.awake) catch return;
         } else {
+            std.Io.sleep(io, std.Io.Duration.fromSeconds(1), std.Io.Clock.awake) catch return;
             self.game.state = .running;
         }
     }

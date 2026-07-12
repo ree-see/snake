@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) void {
     const core_mod = b.createModule(.{ .root_source_file = b.path("src/core.zig"), .target = target, .optimize = optimize });
 
     const ws_mod = b.createModule(.{ .root_source_file = b.path("src/websocket.zig"), .target = target, .optimize = optimize });
+    ws_mod.addImport("core", core_mod);
 
     const session_mod = b.createModule(.{ .root_source_file = b.path("src/session.zig"), .target = target, .optimize = optimize });
     session_mod.addImport("core", core_mod);

@@ -46,7 +46,7 @@ fn handleWs(key: []const u8, io: std.Io, r: *std.Io.Reader, w: *std.Io.Writer, s
     };
     // First frame after upgrade: tell the client which snake index it owns.
     // Everything after this is TronGame delta broadcasts (see Session.startGame).
-    try ws.writeFrame(w, &.{@intCast(idx)});
+    try ws.writeFrame(w, &.{@intCast(idx)}, false);
     // frame while loop
     while (true) {
         const byte0 = r.takeByte() catch break; // [FIN 1bit][RSV 3bits][opcode 4bits]

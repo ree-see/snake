@@ -1,18 +1,56 @@
+const core = @import("core");
 const std = @import("std");
 const http = std.http;
 const crypto = std.crypto;
 const base64 = std.base64;
+const Writer = std.Io.Writer;
+
+const t = std.testing;
+const tw = std.Io.Writer.Allocating;
+const talloc = t.allocator;
+const tio = t.io;
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-pub fn writeFrame(w: *std.Io.Writer, payload: []const u8) !void {
+pub fn writeFrame(w: *Writer, payload: []const u8, textFrame: bool) !void {
     // 0x82 = FIN + binary opcode. Was 0x81 (text) -- browsers UTF-8-decode
     // text frames, which mangles raw position/header bytes. Binary frames
     // arrive in JS as an ArrayBuffer untouched.
-    try w.writeByte(0x82);
+    const opcode: u8 = if (textFrame) 0x81 else 0x82;
+    try w.writeByte(opcode);
     try w.writeByte(@intCast(payload.len));
     try w.writeAll(payload);
     try w.flush();
+}
+
+test "writeFrame writes a text payload type test" {
+    var aw = tw.init(talloc);
+    defer aw.deinit();
+    const msg = "hi";
+
+    try writeFrame(&aw.writer, msg, true);
+    const expected = [_]u8{0x81};
+    const actual = aw.writer.buffered();
+
+    try t.expectEqual(expected[0], actual[0]);
+}
+
+test "writeFrame writes a bin payload type test" {
+    var aw = tw.init(talloc);
+    defer aw.deinit();
+    const delta = core.Delta{
+        .death = .{
+            .died = 1,
+            .killer = 4,
+        },
+        .nextPos = .{ .x = 3, .y = 5 },
+    };
+
+    try writeFrame(&aw.writer, &delta.encode(), true);
+    const expected = [_]u8{0x81};
+    const actual = aw.writer.buffered();
+
+    try t.expectEqual(expected[0], actual[0]);
 }
 
 pub fn computeAcceptKey(key: []const u8) [28]u8 {
