@@ -33,7 +33,7 @@ const Connection = struct {
 };
 
 // TODO: refactor args into a context struct
-pub fn handleWs(key: []const u8, io: std.Io, r: *std.Io.Reader, w: *std.Io.Writer, s: *session.Session) !void {
+fn handleWs(key: []const u8, io: std.Io, r: *std.Io.Reader, w: *std.Io.Writer, s: *session.Session) !void {
     const computed_key = ws.computeAcceptKey(key);
     try w.print("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {s}\r\n", .{&computed_key});
     try w.writeAll("\r\n");
@@ -44,6 +44,9 @@ pub fn handleWs(key: []const u8, io: std.Io, r: *std.Io.Reader, w: *std.Io.Write
         try w.flush();
         return err;
     };
+    // First frame after upgrade: tell the client which snake index it owns.
+    // Everything after this is TronGame delta broadcasts (see Session.startGame).
+    try ws.writeFrame(w, &.{@intCast(idx)});
     // frame while loop
     while (true) {
         const byte0 = r.takeByte() catch break; // [FIN 1bit][RSV 3bits][opcode 4bits]
@@ -65,7 +68,6 @@ pub fn handleWs(key: []const u8, io: std.Io, r: *std.Io.Reader, w: *std.Io.Write
     return;
 }
 
-// TODO: refactor args into a method on Connection
 pub fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void {
     defer conn.deinit();
     while (true) {
@@ -85,6 +87,7 @@ pub fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void
 
         var is_upgrade = false;
         while (headers.next()) |next_header| {
+            std.debug.print("header: {s} = {s}\n", .{ next_header.name, next_header.value });
             if (std.ascii.eqlIgnoreCase(next_header.name, "upgrade")) {
                 is_upgrade = true;
             }
@@ -94,7 +97,10 @@ pub fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void
         }
         if (key != null) {
             const s = try session_man.findOrCreateSession(conn.alloc, conn.io);
-            try handleWs(key.?, conn.io, r, w, s);
+            handleWs(key.?, conn.io, r, w, s) catch |err| {
+                std.debug.print("handleWs error: {}\n", .{err});
+                return err;
+            };
             continue;
         }
         try serveFile(&req, conn.io, conn.alloc);

@@ -195,6 +195,9 @@ footer {
   text-transform: none;
   margin-bottom: 0.6rem;
 }
+.overlay-card.info h2 {
+  color: var(--accent);
+}
 .hint,
 .caption {
   color: var(--muted);

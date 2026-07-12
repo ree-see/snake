@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tron -- Your Name</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body class="game-page">
+    <header class="topbar">
+      <a class="back" href="index.html">&larr; back</a>
+      <div class="score-box" id="status">connecting...</div>
+    </header>
+
+    <main class="stage">
+      <div class="board-wrap">
+        <canvas id="board" tabindex="0" aria-label="Tron game board"></canvas>
+        <div id="overlay" class="overlay">
+          <div class="overlay-card info">
+            <h2>waiting for players</h2>
+            <p>the round starts once 5 players have joined</p>
+          </div>
+        </div>
+      </div>
+      <p class="hint">
+        steer with <kbd>&uarr;</kbd><kbd>&larr;</kbd><kbd>&darr;</kbd
+        ><kbd>&rarr;</kbd> / <kbd>WASD</kbd> / <kbd>IJKL</kbd> &middot; click the
+        board to focus it
+      </p>
+      <p class="caption">
+        Server-authoritative multiplayer, written in Zig. This page is a thin
+        client -- no WASM, no local simulation, just input up and render down.
+      </p>
+      <p id="error" class="error"></p>
+    </main>
+
+    <script src="tron.js"></script>
+  </body>
+</html>
