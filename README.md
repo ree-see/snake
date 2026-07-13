@@ -1,38 +1,30 @@
 
 # Snake
-  A real-time multiplayer/single player snake game collection. Started as an implementation of the classic Snake game in the terminal to eventually 3 snake game variants:Classic, Tron, Battle.
-  
+A real-time multiplayer/single-player snake game collection. Started as a terminal implementation of classic Snake, with plans to grow into 3 variants: Classic, Tron, and Battle Royale.
+
 ![DISCLAIMER]
-```
-  How I used AI in this project:
-    - The zig codebase was written by me. I am not a fronend/web developer nor do I care about as long as it looks good it was fine with me to use it for the frontend client side code.
-    - Zig specific syntax or std library questions were asked to ai and as a bouncing board to talk through the design of the simulation and structure for the zig codebase
-```
+AI helped me in the process of learning zig and its idioms and as a sounding board for ideas and talk through my designs and mental model. AI did NOT write the code other than the client side because I didn't care as long the game was playable nor do I care about frontend development.
+
 ## Quick Start
 ```bash
   git clone https://github.com/ree-see/snake.git
   cd snake
-  # to build the codebase
-  zig build
-  
-  # to start the http server
-  # open browser and navigate to localhost:8080
-  zig build -Doptimize=ReleaseSafe server
 
-  # to start the tui snake version
-  zig build classic
+  zig build -Doptimize=ReleaseSafe   # build everything in release mode
+  zig build server                   # http://localhost:8080/
+  zig build classic                  # run the tui
 ```
 ## Features
-**Core Simulation**: Platform agnostic game logic with collision detection, multi-snake support, and efficient binary encoding
-**TUI**: a simple terminal client in raw mode with unicode and ANSI rendering
-**Multiplayer server**: websocket based with concurrent sessions and connections raw dawgd
-**WASM** for web play *only for classic mode*
+**Core Simulation**: Platform-agnostic game logic with collision detection, multi-snake support, and efficient binary encoding
+**TUI**: A simple terminal client in raw mode with Unicode and ANSI rendering
+**Multiplayer server**: Websocket-based, hand-rolled with no framework, supporting concurrent sessions and connections
+**WASM**: For web play *(classic mode only, for now)*
 
-- Used modern zig version 0.16 with a data oriented design approach
-- extensible in the sense that the frontend code doesn't matter as long as you understand the websocket messaging or able to use the wasm bin to talk to the zig codebase
+- Built with Zig 0.16 using a data-oriented design approach
+- Frontend-agnostic: any client that speaks the websocket protocol (or links the WASM binary) can talk to the Zig core
 
 ## Architecture
-```
+```text
 src/
 ├── core.zig          # Pure simulation (reusable across frontends)
 ├── tui.zig           # Terminal client
@@ -51,11 +43,12 @@ flowchart TD
         Bot[AI Bots]
     end
 
-    Server[Server\nHTTP + WebSocket]
-    Session[Session Manager\nGame State + Players]
-    Core[Core Simulation\nTronGame + Collisions\nDelta Encoding]
+    Server[Server<br/>HTTP + WebSocket]
+    Session[Session Manager<br/>Game State + Players]
+    Core[Core Simulation<br/>TronGame + Collisions<br/>Delta Encoding]
 
-    Clients -->|WebSocket Inputs| Server
+    TUI -->|WebSocket Inputs| Server
+    Bot -->|WebSocket Inputs| Server
     Server -->|Upgrade + Messages| Session
     Session <-->|Tick + Deltas| Core
     Server -.->|Static Assets| Browser
@@ -64,21 +57,22 @@ flowchart TD
 ### Key Decisions
 
 ### `TronGame.snakes`
-Initially the TronGame struct was an AoS (Arrays of Structures) design to a SoA (Sturcture of Arrays).
+`TronGame` started as an AoS (Array of Structures) design and moved to SoA (Structure of Arrays).
 
 Why though?
-You may be thinking for a game with 5 snakes there's no need to pull in `std.MultiArrayList` but my north star for this is a battle royale variant with 100 snakes. This idea came straight from a talk about data oriented design by the zig creator himself, Andrew Kelly. He goes through how he and the zig team increased compilation times by ~50x by using to two techniques. To oversimplify the talk:
+For a game with 5 snakes, pulling in `std.MultiArrayList` looks like overkill — but my north star is a battle royale variant with 100 snakes. The idea came from a data-oriented design talk by the Zig creator, Andrew Kelley, <link for the talk> where he covers how he and the Zig team cut compile times ~50x with two techniques. Oversimplified:
 
-1) being consicious of designing the fields on struct and how they align in memory with respect to cache memory
+1) Being conscious of how struct fields are laid out in memory, with respect to cache lines.
 
-2) utilizing SoA via `std.MultiArrayList` to just iterate over just a one field of a struct.  
+2) Using SoA via `std.MultiArrayList` so you can iterate over a single field of a struct without touching the rest.
 
-So after watch this talk I realized when this game gets the battle royale variant I will be looping over nsnakes where `nsnakes` <= 100 every frame to detect collisions and deaths. In each collision check and applying deaths and snakes next position, I was accessing the entire Snake struct just to access `Snake.is_dead` whereas in a SoA design I can just iterate over a slice a of `is_dead` fields and the index is what keeps track of which snake is dead.
-SoA the memory being put into L2 cache was ~32 bytes per snake so 5 * 32 bytes = 160 bytes but with SoA L2 cache was 1 byte iterate just the `is_dead` field of each snake is `[5]bool` because of padding bool is a byte so 5 * 1 byte = 5 bytes with no cache misses. Of course this pre mature and probably not reasonable for a production build where I would test this thesis out with tests and benchmarks to prove that this provides a net positive change because using the `std.MultiArrayList` does bring in some costs:
+After watching that talk, I realized the battle royale variant will loop over `nsnakes` (≤ 100) every frame to detect collisions and deaths. In each collision check, I was pulling in the entire `Snake` struct just to read `Snake.is_dead`, when a SoA layout lets me iterate a plain slice of `is_dead` values instead, with the index identifying which snake it belongs to.
 
-1) productivity in that I had to refactor `core.zig` to do example below which isn't much but I need to the boilerplate code of `const s = snakes.slice(); const <some snake field> = s.items(.<some snake field>);` any where I wanted to access a field of a snake through the `TronGame` struct.
+With AoS, 5 snakes at ~32 bytes each pulls ~160 bytes into L2 cache per iteration. With SoA, iterating just `is_dead` touches a `[5]bool` — 1 byte each (with padding) — so 5 bytes total, no cache misses. This is admittedly premature, and not something I'd ship to production without benchmarks proving a net win, because `std.MultiArrayList` isn't free:
 
-2) `TronGame.snakes` is now on th heap and managed by the `std.MultiArrayList`.
+1) Productivity cost: every place I accessed a snake field through `TronGame`, I now need the boilerplate `const s = snakes.slice(); const <field> = s.items(.<field>);` (see example below).
+
+2) `TronGame.snakes` now lives on the heap, managed by `std.MultiArrayList`.
 
 ```zig
 for (snakes) |snakes| {
@@ -98,7 +92,7 @@ for (dead) |is_dead| {
 ```zig
 const TronGame = struct {
   snakes: [n_snakes]Snake
-  ...
+  ... // other fields
 }
 
 # with SoA design
@@ -113,11 +107,16 @@ const TronGame = struct {
 ```
 
 ### Concurrent and Network Design
-**From-Scratch HTTP and Websocket Server**: I had never tried to implement an http server in any language so I wanted to challenge myself or any manual thread management but I at least wanted to attempt and with the partner of ai I was able to understand the plumbing and implement the basic http server and websocket protocol. Now I want this is not a production ready server I have basic path traversal and sanitation and game specific websocket messaging design. There endless edge cases that I didn't implement just because of productivity reasons and just wanting to implement the basics of the http and websocket protocols and have a deeper understanding of what actually is going under the hood when I am using http and websocket libraries in any programming language.
+**From-Scratch HTTP and Websocket Server**: I'd never implemented an HTTP server in any language, so I wanted to challenge myself — no framework, manual thread management. With AI as a partner for understanding the plumbing, I implemented a basic HTTP server and the websocket protocol myself. This is not a production-ready server: I have basic path traversal protection, input sanitization, and game-specific websocket messaging. Plenty of edge cases are left unhandled, since the goal was understanding the fundamentals of HTTP and websockets, not building something production-grade.
 
-**Concurrency Design**: So the architecture is a client connects to the server and creates a thread for that connection so a thread per connection. And then the server via session manager pushes the client to a session and each session is a thread. So there is a main thread, thread per client and thread per session. So this design has to be able to manage state safely. How I ensured data not be corrupted was a mutex on the session manager and each session. Because I have the main thread reading and mutating the sessions in the session manager at the same time I have clients mutating the message queue. This part was where I struggled I had never implemented myself any mutlithreaded concurrency. 
+**Concurrency Design**: A client connects to the server and spawns a thread per connection. The session manager then assigns the client to a session, and each session also runs on its own thread so there's a main thread, one thread per client, and one thread per session. That means state has to be managed safely: I used a mutex on the session manager and on each session, since the main thread reads/mutates sessions in the session manager while clients concurrently mutate their message queues. This was the hardest part. I'd never implemented multithreaded concurrency myself before this project.
 
 ## Implementation Journey
+- When implementing the multithreaded concurrency design, I tried (`src/session.zig` lines 519-547) using tests to catch race conditions, as one naive developer would do. Then I realized testing for race conditions is very tricky — even before adding mutex locks, the test was passing. I probably ran the test 1000-2000 times trying to trigger a race condition. I never got one, but that doesn't mean it wasn't possible.
+
+- I had always shied away from manually memory-managed languages, because my programming journey started with Python for data science. Even with Rust, you aren't really managing memory — you state lifetimes and annotate them, but you don't manually say "alloc now" or "free this once done." I've gained an appreciation for manual memory management, and I love the control it gives.
+
+- Naively, I originally designed the sessions to use arena allocators, but realized that wasn't the right tool for what I needed: (1) a session has shared state between two external actors, which isn't great for arenas, and (2) if you're careful with your init and deinit methods, you don't really need them. As long as you propagate the memory management up through the higher-order structs — snakes are initialized and freed by the game, games by sessions, sessions by the session manager, and the session manager by `main` — you get the same guarantees without arena overhead.
 
 ## Roadmap
 - Basic bot for demos and testing
@@ -127,3 +126,8 @@ const TronGame = struct {
 
 ## Tech Stack
 - Zig 0.16
+  - Why?
+    - Initial reasoning was I thought it was interesting especially the new IO interface
+      - one gripes I had with rust was how crazy rust gets once you hit async and concurrency in rust. Zigs take on the IO interface was pleasing and easier to use than rust and tokio.
+    - Some zig contributor I follow explained zig very well
+  Paraphrasing: "C I can do anything. I want with rust I have to write a dissertation just to experiment some things. Zig is that perfect middle ground."
