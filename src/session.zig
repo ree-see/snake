@@ -246,13 +246,18 @@ pub const Session = struct {
 
     pub fn startGame(self: *Session, io: std.Io) SessionError!void {
         self.game.state = .running;
+        var dead_count: u4 = 0;
+        var winner_idx: u8 = undefined;
+
+        const s = self.game.snakes.slice();
+        const dead = s.items(.is_dead);
         while (self.game.state != .over) {
+            dead_count = 0;
             try self.drain(io);
             self.game.tick(self.alloc) catch |err| {
                 std.debug.print("{}", .{err});
                 self.endGame();
             };
-
             std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), std.Io.Clock.awake) catch return;
             // broadcast next render frame
             const payload = self.game.encodeDeltas();
@@ -263,9 +268,30 @@ pub const Session = struct {
                     continue;
                 };
             }
-            if (self.game.state == .over) {
-                break;
+            for (dead, 0..) |is_dead, i| {
+                if (is_dead) {
+                    dead_count += 1;
+                    continue;
+                }
+                if (dead_count == 4) {
+                    winner_idx = @intCast(i);
+                }
             }
+        }
+
+        var buf: [20]u8 = undefined;
+        var msg: []u8 = undefined;
+        if (dead_count == 4) {
+            msg = std.fmt.bufPrint(&buf, "{{ \"winner\": {d} }}", .{winner_idx}) catch unreachable;
+        } else {
+            msg = std.fmt.bufPrint(&buf, "{{ \"winner\": 5 }}", .{}) catch unreachable;
+        }
+        for (self.players) |maybe_player| {
+            const p = maybe_player orelse continue;
+            ws.writeFrame(p.writer, msg, true) catch |err| {
+                std.debug.print("{}", .{err});
+                return;
+            };
         }
     }
 

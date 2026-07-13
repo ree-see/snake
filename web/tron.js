@@ -143,6 +143,21 @@ function handleControlMessage(msg) {
     overlayTitle.textContent = `starting in ${msg.countdown}...`;
     overlayBody.textContent = "get ready";
   }
+
+  if (typeof msg.winner === "number") {
+    // winner === N_SNAKES (5) is the server's tie-broadcast sentinel --
+    // see Session.startGame's dead_count == n_snakes branch in session.zig.
+    const isTie = msg.winner === N_SNAKES;
+    const isWinner = !isTie && msg.winner === myIdx;
+
+    overlayTitle.textContent = isTie ? "draw" : isWinner ? "you won" : "you lost";
+    overlayBody.textContent = isTie
+      ? "everyone crashed on the same tick"
+      : isWinner
+        ? "last snake standing"
+        : `player ${msg.winner + 1} won`;
+    overlay.classList.remove("hidden");
+  }
 }
 
 function setStatus(text, color) {

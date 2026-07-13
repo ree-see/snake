@@ -34,55 +34,6 @@ const Food = struct {
     }
 };
 
-pub const ClassicGame = struct {
-    score: u8,
-    snake: Snake,
-    food: Food,
-    state: GameState,
-
-    pub fn init(gpa: std.mem.Allocator, rand: std.Random) !ClassicGame {
-        const snake = try Snake.init(gpa);
-        const food = Food.new(rand);
-        const state = GameState.running;
-
-        return .{ .score = 0, .snake = snake, .food = food, .state = state };
-    }
-
-    pub fn deinit(self: *ClassicGame, gpa: std.mem.Allocator) void {
-        self.snake.deinit(gpa);
-    }
-
-    pub fn spawnFood(self: *ClassicGame, rand: std.Random) ?Food {
-        // check if board is full with snakes body
-        if (self.snake.len() == GRID_HEIGHT * GRID_WIDTH) return null;
-        var new_food = Food.new(rand);
-        // generate new food pos thats not the snakes body
-        while (bodyContains(self.snake.body.items, new_food.pos)) {
-            new_food = Food.new(rand);
-        }
-
-        return new_food;
-    }
-
-    pub fn tick(self: *ClassicGame, gpa: std.mem.Allocator, rand: std.Random) !void {
-        if (nextPos(self.snake.direction, self.snake.body.items[0])) |next_pos| {
-            if (bodyContains(self.snake.body.items, next_pos)) {
-                self.state = .over;
-            }
-            try self.snake.addHead(gpa, next_pos);
-
-            if (std.meta.eql(next_pos, self.food.pos)) {
-                self.score += 1;
-                if (self.spawnFood(rand)) |food| self.food = food else self.state = .over;
-            } else {
-                self.snake.removeTail();
-            }
-        } else {
-            self.state = .over;
-        }
-    }
-};
-
 // Pure geometry over data, not methods on a fat object. TronGame's hot loops
 // call these directly against SoA columns; Snake.next/contains delegate to them
 // so the single-snake path (ClassicGame) and the many-snake SoA path share one
@@ -350,7 +301,7 @@ pub const TronGame = struct {
                 try body[i].insert(gpa, 0, target);
             }
         }
-        if (dead_count == n_snakes) self.state = .over;
+        if (dead_count == n_snakes - 1 or dead_count == n_snakes) self.state = .over;
     }
 
     pub fn resetDelta(self: *TronGame) void {
@@ -641,6 +592,27 @@ test "game tick snakes dies check if dead snake body is gone" {
     try expect(!game.snakes.items(.is_dead)[1]);
 }
 
+test "advanceSnake sets game state to dead with one alive snake" {
+    const gpa = std.testing.allocator;
+    var game = try TronGame.init(gpa);
+    defer game.deinit(gpa);
+
+    while (game.state != .over) {
+        try game.tick(gpa);
+    }
+
+    try std.testing.expectEqual(GameState.over, game.state);
+
+    const s = game.snakes.slice();
+    const dead = s.items(.is_dead);
+    var dead_count: u4 = 0;
+    for (dead) |is_dead| {
+        if (is_dead) dead_count += 1;
+    }
+
+    try std.testing.expectEqual(5, dead_count);
+}
+
 test "collision with other snakes body" {
     const gpa = std.testing.allocator;
     var game = try TronGame.init(gpa);
@@ -733,6 +705,55 @@ test "collision h2h test" {
     try std.testing.expect(game.snakes.items(.is_dead)[0]);
     try std.testing.expectEqual(2, game.snakes.items(.kills)[1]);
 }
+
+pub const ClassicGame = struct {
+    score: u8,
+    snake: Snake,
+    food: Food,
+    state: GameState,
+
+    pub fn init(gpa: std.mem.Allocator, rand: std.Random) !ClassicGame {
+        const snake = try Snake.init(gpa);
+        const food = Food.new(rand);
+        const state = GameState.running;
+
+        return .{ .score = 0, .snake = snake, .food = food, .state = state };
+    }
+
+    pub fn deinit(self: *ClassicGame, gpa: std.mem.Allocator) void {
+        self.snake.deinit(gpa);
+    }
+
+    pub fn spawnFood(self: *ClassicGame, rand: std.Random) ?Food {
+        // check if board is full with snakes body
+        if (self.snake.len() == GRID_HEIGHT * GRID_WIDTH) return null;
+        var new_food = Food.new(rand);
+        // generate new food pos thats not the snakes body
+        while (bodyContains(self.snake.body.items, new_food.pos)) {
+            new_food = Food.new(rand);
+        }
+
+        return new_food;
+    }
+
+    pub fn tick(self: *ClassicGame, gpa: std.mem.Allocator, rand: std.Random) !void {
+        if (nextPos(self.snake.direction, self.snake.body.items[0])) |next_pos| {
+            if (bodyContains(self.snake.body.items, next_pos)) {
+                self.state = .over;
+            }
+            try self.snake.addHead(gpa, next_pos);
+
+            if (std.meta.eql(next_pos, self.food.pos)) {
+                self.score += 1;
+                if (self.spawnFood(rand)) |food| self.food = food else self.state = .over;
+            } else {
+                self.snake.removeTail();
+            }
+        } else {
+            self.state = .over;
+        }
+    }
+};
 
 test "classic snake movement" {
     const gpa = std.testing.allocator;
