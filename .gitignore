@@ -4,3 +4,8 @@ zig-out/
 CLAUDE.md
 .DS_Store
 .pi/
+server
+http
+build.zig.zon
+.fff/
+.ruff_cache/

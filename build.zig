@@ -25,7 +25,7 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(server);
 
-    const tui = b.addExecutable(.{
+    const classic = b.addExecutable(.{
         .name = "snake",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/tui.zig"),
@@ -34,10 +34,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    tui.root_module.addImport("core", core_mod);
-    tui.is_linking_libc = true;
+    classic.root_module.addImport("core", core_mod);
+    classic.is_linking_libc = true;
 
-    b.installArtifact(tui);
+    b.installArtifact(classic);
 
     const wasm = b.addExecutable(.{
         .name = "snake-wasm",
@@ -62,11 +62,11 @@ pub fn build(b: *std.Build) void {
     server_step.dependOn(&server_cmd.step);
 
     // `zig build run` -- launch the interactive TUI (ESC quits).
-    const run_cmd = b.addRunArtifact(tui);
+    const run_cmd = b.addRunArtifact(classic);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
 
-    const run_step = b.step("run", "Run the app");
+    const run_step = b.step("classic", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
     // `zig build wasm` -- builds wasm library
@@ -75,7 +75,7 @@ pub fn build(b: *std.Build) void {
 
     // `zig build test` -- run the `test {}` blocks in src/tui.zig.
     const exe_tests = b.addTest(.{
-        .root_module = tui.root_module,
+        .root_module = classic.root_module,
     });
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
