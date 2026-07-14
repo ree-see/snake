@@ -34,10 +34,6 @@ const Food = struct {
     }
 };
 
-// Pure geometry over data, not methods on a fat object. TronGame's hot loops
-// call these directly against SoA columns; Snake.next/contains delegate to them
-// so the single-snake path (ClassicGame) and the many-snake SoA path share one
-// implementation.
 fn nextPos(direction: Snake.Direction, head: Position) ?Position {
     return switch (direction) {
         .up => if (head.y == 0) null else .{ .x = head.x, .y = head.y - 1 },
@@ -125,30 +121,11 @@ pub const Delta = struct {
 };
 
 pub const TronGame = struct {
-    // ---- Data-oriented layout ------------------------------------------------
-    // The old shape was `snakes: [n]Snake` — an array of fat structs. Every tick,
-    // checkBodyCollision / checkSelfCollision / advanceSnakes open with
-    //     if (snake.is_dead) continue;
-    // In AoS, reading that one bool drags the whole Snake (bool + direction +
-    // kills + a ~24-byte ArrayList handle) into cache, one line per snake, just
-    // to decide whether to skip it.
-    //
-    // MultiArrayList stores each field in its own parallel column, so the dead
-    // gate scans a dense []bool: many snakes per cache line, and the hardware
-    // prefetcher can stream it. We reach for MultiArrayList (not a fixed [n] SoA
-    // struct) because the snake.io north star has a *dynamic* player count.
-    //
-    // The limit worth remembering: `body` is still an ArrayList — a pointer to a
-    // per-snake heap allocation. Packing the handles contiguously does nothing
-    // for the bodyContains() scan, which follows that pointer off to scattered
-    // heap memory. Fixing the body scan is a separate, deeper redesign.
     state: GameState,
     snakes: std.MultiArrayList(Snake),
     delta: [n_snakes]Delta,
 
     pub const n_snakes: u8 = 5;
-    // Indices into `snakes`, not pointers or usize: a u8 addresses the roster
-    // with room to spare. (Kelley's "shrink the struct" half.)
     const DeathResult = struct { died: u8, killer: ?u8 };
 
     pub fn init(gpa: std.mem.Allocator) !TronGame {

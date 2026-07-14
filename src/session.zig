@@ -4,7 +4,7 @@ const t = std.testing;
 const tio = std.testing.io;
 
 const core = @import("core");
-const ws = @import("websocket");
+// const ws = @import("websocket");
 
 pub const SessionManager = struct {
     mutex: std.Io.Mutex,
@@ -181,12 +181,12 @@ pub const Session = struct {
         }
     }
 
-    pub fn addPlayer(self: *Session, io: std.Io, w: *std.Io.Writer) SessionError!usize {
+    pub fn addPlayer(self: *Session, io: std.Io, ws: *std.http.Server.WebSocket) SessionError!usize {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
         for (self.players, 0..) |player, i| {
             if (player != null) continue;
-            const new_player = Player.new(self.count, w);
+            const new_player = Player.new(self.count, ws);
             self.players[i] = new_player;
             self.players[i].?.assignSnake(i);
             self.count += 1;
@@ -262,8 +262,9 @@ pub const Session = struct {
             // broadcast next render frame
             const payload = self.game.encodeDeltas();
             for (self.players) |maybe_player| {
-                const p = maybe_player orelse continue;
-                ws.writeFrame(p.writer, &payload, false) catch |err| {
+                const p = maybe_player orelse continue; // maybe we don't need player type anymore
+
+                p.ws.writeMessage(&payload, .binary) catch |err| {
                     std.debug.print("{}", .{err});
                     continue;
                 };
@@ -288,7 +289,7 @@ pub const Session = struct {
         }
         for (self.players) |maybe_player| {
             const p = maybe_player orelse continue;
-            ws.writeFrame(p.writer, msg, true) catch |err| {
+            p.ws.writeMessage(msg, .text) catch |err| {
                 std.debug.print("{}", .{err});
                 return;
             };
@@ -309,7 +310,7 @@ pub const Session = struct {
                 const msg = try std.fmt.bufPrint(&buf, "{{ \"countdown\": {d} }}", .{countdown + 1 - i});
                 for (self.players) |maybe_player| {
                     const p = maybe_player orelse continue;
-                    ws.writeFrame(p.writer, msg, true) catch |err| {
+                    p.ws.writeMessage(msg, .text) catch |err| {
                         std.debug.print("{}", .{err});
                         continue;
                     };
@@ -340,11 +341,11 @@ pub const Session = struct {
 
 pub const Player = struct {
     id: u64,
-    writer: *std.Io.Writer,
+    ws: *std.http.Server.WebSocket,
     snake: ?usize,
 
-    pub fn new(id: u64, w: *std.Io.Writer) Player {
-        return .{ .id = id, .writer = w, .snake = null };
+    pub fn new(id: u64, ws: *std.http.Server.WebSocket) Player {
+        return .{ .id = id, .ws = ws, .snake = null };
     }
 
     pub fn assignSnake(self: *Player, idx: usize) void {

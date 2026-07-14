@@ -13,9 +13,6 @@ const tio = t.io;
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 pub fn writeFrame(w: *Writer, payload: []const u8, textFrame: bool) !void {
-    // 0x82 = FIN + binary opcode. Was 0x81 (text) -- browsers UTF-8-decode
-    // text frames, which mangles raw position/header bytes. Binary frames
-    // arrive in JS as an ArrayBuffer untouched.
     const opcode: u8 = if (textFrame) 0x81 else 0x82;
     try w.writeByte(opcode);
     try w.writeByte(@intCast(payload.len));

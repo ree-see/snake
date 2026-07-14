@@ -1,6 +1,6 @@
 const std = @import("std");
 const session = @import("session");
-const ws = @import("websocket");
+// const ws = @import("websocket");
 const http = std.http;
 const crypto = std.crypto;
 const base64 = std.base64;
@@ -33,43 +33,23 @@ const Connection = struct {
 };
 
 // TODO: refactor function
-fn handleWs(key: []const u8, io: std.Io, r: *std.Io.Reader, w: *std.Io.Writer, s: *session.Session) !void {
-    const computed_key = ws.computeAcceptKey(key);
-    try w.print("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {s}\r\n", .{&computed_key});
-    try w.writeAll("\r\n");
-    try w.flush();
-
-    const idx = s.addPlayer(io, w) catch |err| {
-        try w.print("{}", .{err});
-        try w.flush();
+fn handleWs(io: std.Io, ws: *std.http.Server.WebSocket, s: *session.Session) !void {
+    const idx = s.addPlayer(io, ws) catch |err| {
+        try ws.output.print("{}", .{err});
+        try ws.output.flush();
         return err;
     };
-    // First frame after upgrade: tell the client which snake index it owns.
-    // Everything after this is TronGame delta broadcasts (see Session.startGame).
-    try ws.writeFrame(w, &.{@intCast(idx)}, false);
-    // frame while loop
-    while (true) {
-        const byte0 = r.takeByte() catch break; // [FIN 1bit][RSV 3bits][opcode 4bits]
-        const byte1 = r.takeByte() catch break; // [MASK 1bit][paylaod-len 7bits]
 
-        const opcode = byte0 & 0x0F; // what kind of frame
-        _ = opcode; // will use later
-        const is_masked = byte1 & 0x80; // bit 0 1 = is masked 0 = not masked illegal frame
-        if (is_masked == 0) {
-            continue;
-        }
-        const length = byte1 & 0x7F; // 7-bit length if 126 -> next 2 bytes if 127 the next 8 bytes
-        const masking_key = r.takeArray(4) catch break; // key to unmask the bit in the payload bytes
-        const payload = r.take(length) catch break; // payload bytes
-        ws.unmaskBits(payload, masking_key.*);
-        // try writeFrame(w, payload);
-        s.pushMessage(io, .{ .idx = idx, .key_pressed = payload[0] }) catch |err| {
-            std.debug.print("{}", .{err});
+    while (true) {
+        const small_message = ws.readSmallMessage() catch break;
+        try ws.writeMessage(small_message.data, small_message.opcode);
+        s.pushMessage(io, .{ .idx = idx, .key_pressed = small_message.data[0] }) catch |err| {
+            std.log.err("{}", .{err});
         };
     }
 
     s.removePlayer(io, idx) catch |err| {
-        std.debug.print("{}", .{err});
+        std.log.err("{}", .{err});
     };
     std.debug.print("Player {} disconnected", .{idx});
     return;
@@ -91,28 +71,46 @@ pub fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void
         var server = http.Server.init(r, w);
         var req = try server.receiveHead();
 
-        var headers = req.iterateHeaders();
-        var key: ?[]const u8 = null;
+        switch (req.upgradeRequested()) {
+            .websocket => |maybe_key| {
+                if (maybe_key) |key| {
+                    var ws = req.respondWebSocket(.{ .key = key }) catch |err| {
+                        std.log.err("{}", .{err});
+                        return;
+                    };
+                    const s = try session_man.findOrCreateSession(conn.alloc, conn.io);
+                    handleWs(conn.io, &ws, s) catch |err| {
+                        std.log.err("{}", .{err});
+                        return;
+                    };
+                }
+            },
+            .other => {},
+            .none => try serveFile(&req, conn.io, conn.alloc),
+        }
 
-        var is_upgrade = false;
-        while (headers.next()) |next_header| {
-            std.debug.print("header: {s} = {s}\n", .{ next_header.name, next_header.value });
-            if (std.ascii.eqlIgnoreCase(next_header.name, "upgrade")) {
-                is_upgrade = true;
-            }
-            if (is_upgrade and std.ascii.eqlIgnoreCase(next_header.name, "sec-websocket-key")) {
-                key = next_header.value;
-            }
-        }
-        if (key != null) {
-            const s = try session_man.findOrCreateSession(conn.alloc, conn.io);
-            handleWs(key.?, conn.io, r, w, s) catch |err| {
-                std.debug.print("handleWs error: {}\n", .{err});
-                return err;
-            };
-            continue;
-        }
-        try serveFile(&req, conn.io, conn.alloc);
+        // var headers = req.iterateHeaders();
+        // var key: ?[]const u8 = null;
+
+        // var is_upgrade = false;
+        // while (headers.next()) |next_header| {
+        //     std.debug.print("header: {s} = {s}\n", .{ next_header.name, next_header.value });
+        //     if (std.ascii.eqlIgnoreCase(next_header.name, "upgrade")) {
+        //         is_upgrade = true;
+        //     }
+        //     if (is_upgrade and std.ascii.eqlIgnoreCase(next_header.name, "sec-websocket-key")) {
+        //         key = next_header.value;
+        //     }
+        // }
+        // if (key != null) {
+        //     const s = try session_man.findOrCreateSession(conn.alloc, conn.io);
+        //     handleWs(key.?, conn.io, r, w, s) catch |err| {
+        //         std.debug.print("handleWs error: {}\n", .{err});
+        //         return err;
+        //     };
+        //     continue;
+        // }
+        // try serveFile(&req, conn.io, conn.alloc);
     }
 }
 
