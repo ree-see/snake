@@ -65,7 +65,7 @@ For a game with 5 snakes, pulling in `std.MultiArrayList` looks like overkill bu
 
   After watching that talk, I realized the battle royale variant will loop over `n_snakes ≤ 100` every frame to detect collisions and deaths. In each collision check, I was pulling in the entire `Snake` struct just to read `Snake.is_dead`, when a SoA layout lets me iterate a plain slice of `is_dead` values instead, with the index identifying which snake it belongs to.
 
-  With AoS, 5 snakes at ~32 bytes each pulls ~160 bytes into L2 cache per iteration. With SoA, iterating just `is_dead` touches a `[5]bool` 1 byte each (with padding) so 5 bytes total, no cache misses. This is admittedly premature, and not something I'd ship to production without benchmarks proving a net win, because `std.MultiArrayList` isn't free:
+  With AoS, `[5]snakes` at ~32 bytes each pulls ~160 bytes into L2 cache per iteration. With SoA, iterating just `is_dead` touches a `[5]bool` 1 byte each (with padding) so 5 bytes total, no cache misses. This is admittedly premature, and not something I'd ship to production without benchmarks proving a net win, because `std.MultiArrayList` isn't free:
 
 1) Productivity cost: every place I accessed a snake field through `TronGame`, I now need the boilerplate `const s = snakes.slice(); const <field> = s.items(.<field>);` (see example below).
 
@@ -129,4 +129,4 @@ As long as you propagate the memory management up through the higher-order struc
     - Initial reasoning was I thought it was interesting especially the new IO interface
       - one gripes I had with rust was how crazy rust gets once you hit async and concurrency in rust. Zigs take on the IO interface was pleasing and easier to use than rust and tokio.
     - Some zig contributor I follow explained zig very well
-  Paraphrasing: "*C I can do anything but I can shoot myself in the foot. I want with rust I have to write a dissertation just to experiment some things. Zig is that perfect middle ground.*"
+>"*C I can do anything but I can shoot myself in the foot. I want with rust I have to write a dissertation just to experiment some things. Zig is that perfect middle ground.*"
