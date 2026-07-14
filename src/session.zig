@@ -4,7 +4,6 @@ const t = std.testing;
 const tio = std.testing.io;
 
 const core = @import("core");
-// const ws = @import("websocket");
 
 pub const SessionManager = struct {
     mutex: std.Io.Mutex,
@@ -152,7 +151,7 @@ pub const Session = struct {
     pub fn canJoin(self: *Session, io: std.Io) SessionError!bool {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         self.mutex.unlock(io);
-        return self.game.state == .lobby and !try self.isFull(io);
+        return self.canJoinLocked();
     }
 
     pub fn canJoinLocked(self: *Session) bool {
@@ -162,13 +161,7 @@ pub const Session = struct {
     pub fn drain(self: *Session, io: std.Io) SessionError!void {
         self.mutex.lock(io) catch return Session.SessionError.LockedMutex;
         defer self.mutex.unlock(io);
-        while (true) {
-            if (self.queue.pop()) |m| {
-                const s = self.game.snakes.slice();
-                const prev_dir = s.items(.direction)[m.idx];
-                s.items(.direction)[m.idx] = core.setDirection(prev_dir, m.key_pressed);
-            } else break;
-        }
+        return self.drainLocked();
     }
 
     pub fn drainLocked(self: *Session) void {
@@ -184,6 +177,10 @@ pub const Session = struct {
     pub fn addPlayer(self: *Session, io: std.Io, ws: *std.http.Server.WebSocket) SessionError!usize {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
+        return self.addPlayerLocked(ws);
+    }
+
+    pub fn addPlayerLocked(self: *Session, ws: *std.http.Server.WebSocket) SessionError!usize {
         for (self.players, 0..) |player, i| {
             if (player != null) continue;
             const new_player = Player.new(self.count, ws);
@@ -196,43 +193,20 @@ pub const Session = struct {
         return SessionError.LobbyFull;
     }
 
-    pub fn addPlayerLocked(self: *Session, w: *std.Io.Writer) usize {
-        for (self.players, 0..) |player, i| {
-            if (player != null) continue;
-            const new_player = Player.new(self.count, w);
-            self.players[i] = new_player;
-            self.players[i].?.assignSnake(i);
-            self.count += 1;
-            return i;
-        }
-
-        return SessionError.LobbyFull;
-    }
-
     pub fn removePlayer(self: *Session, io: std.Io, players_idx: usize) SessionError!void {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
-        self.players[players_idx] = null;
+        return self.removePlayerLocked(players_idx);
     }
 
     pub fn removePlayerLocked(self: *Session, players_idx: usize) void {
-        for (self.players, 0..) |_, i| {
-            if (players_idx == i) {
-                self.players[i] = null;
-                break;
-            } else continue;
-        }
+        self.players[players_idx] = null;
     }
 
     pub fn isFull(self: *Session, io: std.Io) SessionError!bool {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
-        for (self.players) |player| {
-            if (player == null) {
-                return false;
-            }
-        }
-        return true;
+        return self.isFullLocked();
     }
 
     pub fn isFullLocked(self: *Session) bool {
@@ -261,14 +235,8 @@ pub const Session = struct {
             std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), std.Io.Clock.awake) catch return;
             // broadcast next render frame
             const payload = self.game.encodeDeltas();
-            for (self.players) |maybe_player| {
-                const p = maybe_player orelse continue; // maybe we don't need player type anymore
 
-                p.ws.writeMessage(&payload, .binary) catch |err| {
-                    std.debug.print("{}", .{err});
-                    continue;
-                };
-            }
+            self.broadcast(io, &payload, .text) catch |err| std.log.err("{}", .{err});
             for (dead, 0..) |is_dead, i| {
                 if (is_dead) {
                     dead_count += 1;
@@ -287,9 +255,20 @@ pub const Session = struct {
         } else {
             msg = std.fmt.bufPrint(&buf, "{{ \"winner\": 5 }}", .{}) catch unreachable;
         }
+
+        self.broadcast(io, msg, .text) catch |err| std.log.err("{}", .{err});
+    }
+
+    pub fn broadcast(self: *Session, io: std.Io, msg: []const u8, op: std.http.Server.WebSocket.Opcode) SessionError!void {
+        self.mutex.lock(io) catch return SessionError.LockedMutex;
+        defer self.mutex.unlock(io);
+        self.broadcastLocked(msg, op);
+    }
+
+    pub fn broadcastLocked(self: *Session, msg: []const u8, op: std.http.Server.WebSocket.Opcode) void {
         for (self.players) |maybe_player| {
             const p = maybe_player orelse continue;
-            p.ws.writeMessage(msg, .text) catch |err| {
+            p.ws.writeMessage(msg, op) catch |err| {
                 std.debug.print("{}", .{err});
                 return;
             };
@@ -300,21 +279,15 @@ pub const Session = struct {
         self.game.state = .over;
     }
 
-    pub fn startLobby(self: *Session, io: std.Io, countdown: usize) !void {
+    pub fn startLobby(self: *Session, io: std.Io, countdown: usize) SessionError!void {
         while (!try self.isFull(io)) {
             std.Io.sleep(io, std.Io.Duration.fromMilliseconds(500), std.Io.Clock.awake) catch return;
         } else {
             for (1..countdown + 1) |i| {
                 std.Io.sleep(io, std.Io.Duration.fromSeconds(1), std.Io.Clock.awake) catch return;
                 var buf: [20]u8 = undefined;
-                const msg = try std.fmt.bufPrint(&buf, "{{ \"countdown\": {d} }}", .{countdown + 1 - i});
-                for (self.players) |maybe_player| {
-                    const p = maybe_player orelse continue;
-                    p.ws.writeMessage(msg, .text) catch |err| {
-                        std.debug.print("{}", .{err});
-                        continue;
-                    };
-                }
+                const msg = std.fmt.bufPrint(&buf, "{{ \"countdown\": {d} }}", .{countdown + 1 - i}) catch unreachable;
+                try self.broadcast(io, msg, .text);
             }
 
             self.game.state = .running;
@@ -441,14 +414,16 @@ test "is lobby full" {
     var s = try Session.init(talloc);
     defer s.deinit();
 
-    var t_buf: [256]u8 = undefined;
-    var t_w = std.Io.Writer.fixed(&t_buf);
-
-    _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
+    var t_wbuf: [256]u8 = undefined;
+    var t_w = std.Io.Writer.fixed(&t_wbuf);
+    var t_rbuf: [256]u8 = undefined;
+    var t_r = std.Io.Reader.fixed(&t_rbuf);
+    var ws = initTestWs(&t_w, &t_r);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
 
     try t.expect(try s.isFull(tio));
 }
@@ -457,16 +432,18 @@ test "is lobby full error" {
     var s = try Session.init(talloc);
     defer s.deinit();
 
-    var t_buf: [256]u8 = undefined;
-    var t_w = std.Io.Writer.fixed(&t_buf);
+    var t_wbuf: [256]u8 = undefined;
+    var t_w = std.Io.Writer.fixed(&t_wbuf);
+    var t_rbuf: [256]u8 = undefined;
+    var t_r = std.Io.Reader.fixed(&t_rbuf);
+    var ws = initTestWs(&t_w, &t_r);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
 
-    _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
-    _ = try s.addPlayer(tio, &t_w);
-
-    const full_lobby_err = s.addPlayer(tio, &t_w) catch |err| err;
+    const full_lobby_err = s.addPlayer(tio, &ws) catch |err| err;
 
     try t.expectError(Session.SessionError.LobbyFull, full_lobby_err);
 }
@@ -475,22 +452,16 @@ test "is lobby full and game switched to running" {
     var s = try Session.init(talloc);
     defer s.deinit();
 
-    var t_buf1: [256]u8 = undefined;
-    var t_w1 = std.Io.Writer.fixed(&t_buf1);
-    var t_buf2: [256]u8 = undefined;
-    var t_w2 = std.Io.Writer.fixed(&t_buf2);
-    var t_buf3: [256]u8 = undefined;
-    var t_w3 = std.Io.Writer.fixed(&t_buf3);
-    var t_buf4: [256]u8 = undefined;
-    var t_w4 = std.Io.Writer.fixed(&t_buf4);
-    var t_buf5: [256]u8 = undefined;
-    var t_w5 = std.Io.Writer.fixed(&t_buf5);
-
-    _ = try s.addPlayer(tio, &t_w1);
-    _ = try s.addPlayer(tio, &t_w2);
-    _ = try s.addPlayer(tio, &t_w3);
-    _ = try s.addPlayer(tio, &t_w4);
-    _ = try s.addPlayer(tio, &t_w5);
+    var t_wbuf: [4096]u8 = undefined;
+    var t_w = std.Io.Writer.fixed(&t_wbuf);
+    var t_rbuf: [4096]u8 = undefined;
+    var t_r = std.Io.Reader.fixed(&t_rbuf);
+    var ws = initTestWs(&t_w, &t_r);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
+    _ = try s.addPlayer(tio, &ws);
 
     try s.startLobby(tio, 1);
     try t.expectEqual(s.game.state, core.GameState.running);
@@ -500,19 +471,24 @@ test "remove player and replace idx with null" {
     var s = try Session.init(talloc);
     defer s.deinit();
 
-    var t_buf: [256]u8 = undefined;
-    var t_w = std.Io.Writer.fixed(&t_buf);
-
-    _ = try s.addPlayer(tio, &t_w);
+    var t_wbuf: [256]u8 = undefined;
+    var t_w = std.Io.Writer.fixed(&t_wbuf);
+    var t_rbuf: [256]u8 = undefined;
+    var t_r = std.Io.Reader.fixed(&t_rbuf);
+    var ws = initTestWs(&t_w, &t_r);
+    _ = try s.addPlayer(tio, &ws);
     try s.removePlayer(tio, 0);
 
     try t.expect((s.players[0] == null));
 }
 
 fn test_addPlayer(arr: *[8]Session.SessionError!usize, s: *Session, count: usize) void {
-    var t_buf: [256]u8 = undefined;
-    var t_w = std.Io.Writer.fixed(&t_buf);
-    const res = s.addPlayer(tio, &t_w);
+    var t_wbuf: [256]u8 = undefined;
+    var t_w = std.Io.Writer.fixed(&t_wbuf);
+    var t_rbuf: [256]u8 = undefined;
+    var t_r = std.Io.Reader.fixed(&t_rbuf);
+    var ws = initTestWs(&t_w, &t_r);
+    const res = s.addPlayer(tio, &ws);
     arr[count] = res;
 }
 
@@ -545,4 +521,12 @@ test "8 players racing to fill one session" {
             }
         }
     }
+}
+
+fn initTestWs(w: *std.Io.Writer, r: *std.Io.Reader) std.http.Server.WebSocket {
+    return .{
+        .key = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+        .input = r,
+        .output = w,
+    };
 }

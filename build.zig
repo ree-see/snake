@@ -6,12 +6,8 @@ pub fn build(b: *std.Build) void {
 
     const core_mod = b.createModule(.{ .root_source_file = b.path("src/core.zig"), .target = target, .optimize = optimize });
 
-    const ws_mod = b.createModule(.{ .root_source_file = b.path("src/websocket.zig"), .target = target, .optimize = optimize });
-    ws_mod.addImport("core", core_mod);
-
     const session_mod = b.createModule(.{ .root_source_file = b.path("src/session.zig"), .target = target, .optimize = optimize });
     session_mod.addImport("core", core_mod);
-    session_mod.addImport("websocket", ws_mod);
 
     const server = b.addExecutable(.{ .name = "game-server", .root_module = b.createModule(.{
         .root_source_file = b.path("src/server.zig"),
@@ -20,7 +16,6 @@ pub fn build(b: *std.Build) void {
     }) });
 
     server.root_module.addImport("core", core_mod);
-    server.root_module.addImport("websocket", ws_mod);
     server.root_module.addImport("session", session_mod);
 
     b.installArtifact(server);
@@ -81,14 +76,11 @@ pub fn build(b: *std.Build) void {
 
     const core_tests = b.addTest(.{ .root_module = core_mod });
     const session_tests = b.addTest(.{ .root_module = session_mod });
-    const ws_tests = b.addTest(.{ .root_module = ws_mod });
     const run_core_tests = b.addRunArtifact(core_tests);
     const run_session_tests = b.addRunArtifact(session_tests);
-    const run_ws_tests = b.addRunArtifact(ws_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_session_tests.step);
-    test_step.dependOn(&run_ws_tests.step);
 }

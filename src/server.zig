@@ -88,34 +88,12 @@ pub fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void
             .other => {},
             .none => try serveFile(&req, conn.io, conn.alloc),
         }
-
-        // var headers = req.iterateHeaders();
-        // var key: ?[]const u8 = null;
-
-        // var is_upgrade = false;
-        // while (headers.next()) |next_header| {
-        //     std.debug.print("header: {s} = {s}\n", .{ next_header.name, next_header.value });
-        //     if (std.ascii.eqlIgnoreCase(next_header.name, "upgrade")) {
-        //         is_upgrade = true;
-        //     }
-        //     if (is_upgrade and std.ascii.eqlIgnoreCase(next_header.name, "sec-websocket-key")) {
-        //         key = next_header.value;
-        //     }
-        // }
-        // if (key != null) {
-        //     const s = try session_man.findOrCreateSession(conn.alloc, conn.io);
-        //     handleWs(key.?, conn.io, r, w, s) catch |err| {
-        //         std.debug.print("handleWs error: {}\n", .{err});
-        //         return err;
-        //     };
-        //     continue;
-        // }
-        // try serveFile(&req, conn.io, conn.alloc);
     }
 }
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
+    // FIXME: this prolly needs to be switch once hosted somewhere
     const addr = std.Io.net.IpAddress{ .ip4 = .loopback(8080) };
     var listener = try std.Io.net.IpAddress.listen(&addr, io, .{
         .reuse_address = true,
