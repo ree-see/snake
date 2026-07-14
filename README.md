@@ -15,6 +15,8 @@ A real-time multiplayer/single-player snake game collection. Started as a termin
   zig build classic                  # run the tui
 ```
 ## Features
+- Built with Zig 0.16 using a data-oriented design approach
+- Frontend-agnostic: any client that speaks the websocket protocol (or links the WASM binary) can talk to the Zig core
 **Core Simulation**: Platform-agnostic game logic with collision detection, multi-snake support, and efficient binary encoding
 
 **TUI**: A simple terminal client in raw mode with Unicode and ANSI rendering
@@ -22,8 +24,6 @@ A real-time multiplayer/single-player snake game collection. Started as a termin
 **Multiplayer server**: Websocket-based, hand-rolled with no framework, supporting concurrent sessions and connections
 
 **WASM**: For web play *(classic mode only, for now)*
-- Built with Zig 0.16 using a data-oriented design approach
-- Frontend-agnostic: any client that speaks the websocket protocol (or links the WASM binary) can talk to the Zig core
 
 ## Architecture
 ```text
