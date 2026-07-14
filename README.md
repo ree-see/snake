@@ -59,7 +59,9 @@ flowchart TD
 `TronGame` started as an AoS (Array of Structures) design and moved to SoA (Structure of Arrays).
 
 Why though?
->For a game with 5 snakes, pulling in `std.MultiArrayList` looks like overkill but my north star is a battle royale variant with 100 snakes. The idea came from a data-oriented design talk by the Zig creator, Andrew Kelley ([A Practical Guide to Applying Data Oriented Design (DoD)](https://youtu.be/IroPQ150F6c?si=K9GJr_tQXPkbufAm)), where he covers how he and the Zig team measurably cut compile times — up to 39% less wall-clock time (and 53% fewer cache misses) in one pipeline stage, and 22% less wall-clock time in another — with two techniques. Oversimplified:
+
+For a game with 5 snakes, pulling in `std.MultiArrayList` looks like overkill but my north star is a battle royale variant with 100 snakes.
+>The idea came from a data-oriented design talk by the Zig creator, Andrew Kelley ([A Practical Guide to Applying Data Oriented Design (DoD)](https://youtu.be/IroPQ150F6c?si=K9GJr_tQXPkbufAm)), where he covers how he and the Zig team measurably cut compile times — up to 39% less wall-clock time (and 53% fewer cache misses) in one pipeline stage, and 22% less wall-clock time in another — with two techniques. Oversimplified:
 
 1) Being conscious of how struct fields are laid out in memory, with respect to cache lines.
 
