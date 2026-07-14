@@ -72,6 +72,19 @@ For a game with 5 snakes, pulling in `std.MultiArrayList` looks like overkill bu
 2) `TronGame.snakes` now lives on the heap, managed by `std.MultiArrayList`.
 
 ```zig
+const TronGame = struct {
+  snakes: [n_snakes]Snake
+  ... // other fields
+}
+                                    // [5]Snakes {
+# with SoA design                   //     is_dead: [5]bool,
+const TronGame = struct {           //     kills: [5]u8,
+  snakes: std.MultiArrayList(Snake) //     direction: [5]Direction,
+  ... // other fields               //     body: std.ArrayList(Position),
+}                                   //}                                    
+```
+
+```zig
 for (snakes) |snakes| {
   if (snake.is_dead)
   ...
@@ -85,20 +98,6 @@ for (dead) |is_dead| {
   ...
 }
 ```
- 
-```zig
-const TronGame = struct {
-  snakes: [n_snakes]Snake
-  ... // other fields
-}
-                                    // [5]Snakes {
-# with SoA design                   //     is_dead: [5]bool,
-const TronGame = struct {           //     kills: [5]u8,
-  snakes: std.MultiArrayList(Snake) //     direction: [5]Direction,
-  ... // other fields               //     body: std.ArrayList(Position),
-}                                   //}                                    
-```
-
 ### Concurrent and Network Design
 **From-Scratch HTTP and Websocket Server**: I'd never implemented an HTTP server in any language, so I wanted to challenge myself no framework, manual thread management. With AI as a partner for understanding the plumbing, I implemented a basic HTTP server and the websocket protocol myself. This is not a production-ready server: I have basic path traversal protection, input sanitization, and game-specific websocket messaging. Plenty of edge cases are left unhandled, since the goal was understanding the fundamentals of HTTP and websockets, not building something production-grade.
 
