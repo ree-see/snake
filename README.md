@@ -16,8 +16,11 @@ A real-time multiplayer/single-player snake game collection. Started as a termin
 ```
 ## Features
 **Core Simulation**: Platform-agnostic game logic with collision detection, multi-snake support, and efficient binary encoding
+
 **TUI**: A simple terminal client in raw mode with Unicode and ANSI rendering
+
 **Multiplayer server**: Websocket-based, hand-rolled with no framework, supporting concurrent sessions and connections
+
 **WASM**: For web play *(classic mode only, for now)*
 - Built with Zig 0.16 using a data-oriented design approach
 - Frontend-agnostic: any client that speaks the websocket protocol (or links the WASM binary) can talk to the Zig core
@@ -62,7 +65,7 @@ Why though?
 
 2) Using SoA via `std.MultiArrayList` so you can iterate over a single field of a struct without touching the rest.
 
-  After watching that talk, I realized the battle royale variant will loop over `nsnakes` (≤ 100) every frame to detect collisions and deaths. In each collision check, I was pulling in the entire `Snake` struct just to read `Snake.is_dead`, when a SoA layout lets me iterate a plain slice of `is_dead` values instead, with the index identifying which snake it belongs to.
+  After watching that talk, I realized the battle royale variant will loop over `n_snakes` (≤ 100) every frame to detect collisions and deaths. In each collision check, I was pulling in the entire `Snake` struct just to read `Snake.is_dead`, when a SoA layout lets me iterate a plain slice of `is_dead` values instead, with the index identifying which snake it belongs to.
 
   With AoS, 5 snakes at ~32 bytes each pulls ~160 bytes into L2 cache per iteration. With SoA, iterating just `is_dead` touches a `[5]bool` 1 byte each (with padding) so 5 bytes total, no cache misses. This is admittedly premature, and not something I'd ship to production without benchmarks proving a net win, because `std.MultiArrayList` isn't free:
 
@@ -111,6 +114,7 @@ const TronGame = struct {           //     kills: [5]u8,
 - Naively, I originally designed the sessions to use arena allocators, but realized that wasn't the right tool for what I needed:
 
 **(1)** *a session has shared state between two external actors, which isn't great for arenas*
+
 **(2)** *if you're careful with your init and deinit methods, you don't really need them*
 
 As long as you propagate the memory management up through the higher-order structs snakes are initialized and freed by the game, games by sessions, sessions by the session manager, and the session manager by `main` you get the same guarantees without arena overhead.
