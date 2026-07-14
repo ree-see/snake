@@ -77,7 +77,7 @@ const TronGame = struct {
   ... // other fields
 }
                                     // [5]Snakes {
-# with SoA design                   //     is_dead: [5]bool,
+// with SoA design                  //     is_dead: [5]bool,
 const TronGame = struct {           //     kills: [5]u8,
   snakes: std.MultiArrayList(Snake) //     direction: [5]Direction,
   ... // other fields               //     body: std.ArrayList(Position),
