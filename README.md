@@ -81,7 +81,7 @@ const TronGame = struct {
 const TronGame = struct {           //     kills: [5]u8,
   snakes: std.MultiArrayList(Snake) //     direction: [5]Direction,
   ... // other fields               //     body: std.ArrayList(Position),
-}                                   //}                                    
+}                                   // }                                    
 ```
 
 ```zig
