@@ -1,16 +1,17 @@
 const std = @import("std");
 const core = @import("core");
+const games = @import("games");
 
-var game: core.TronGame = undefined;
+var game: games.TronGame = undefined;
 
 export fn init() void {
-    const gpa = std.heap.wasm_allocator;
-    game = core.TronGame.init(gpa) catch @panic("OOM error");
+    const walloc = std.heap.wasm_allocator;
+    game = games.TronGame.init(walloc) catch @panic("OOM error");
 }
 
 export fn tick() void {
-    const gpa = std.heap.wasm_allocator;
-    game.tick(gpa) catch @panic("OOM error");
+    const walloc = std.heap.wasm_allocator;
+    game.tick(walloc) catch @panic("OOM error");
 }
 
 export fn setDirection(idx: usize, key_press: u8) void {

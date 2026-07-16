@@ -1,9 +1,10 @@
 const std = @import("std");
+const core = @import("core");
+const games = @import("games");
+
 const talloc = std.testing.allocator;
 const t = std.testing;
 const tio = std.testing.io;
-
-const core = @import("core");
 
 pub const SessionManager = struct {
     mutex: std.Io.Mutex,
@@ -141,8 +142,8 @@ pub const Session = struct {
     alloc: std.mem.Allocator,
     mutex: std.Io.Mutex,
     run_group: std.Io.Group,
-    game: core.TronGame,
-    players: [core.TronGame.n_snakes]?Player,
+    game: games.TronGame,
+    players: [games.TronGame.n_snakes]?Player,
     queue: MessageQueue,
     count: u64 = 0,
 
@@ -154,8 +155,8 @@ pub const Session = struct {
     pub fn init(alloc: std.mem.Allocator) !Session {
         const mutex = std.Io.Mutex.init;
 
-        const game = try core.TronGame.init(alloc);
-        const players: [core.TronGame.n_snakes]?Player = [_]?Player{null} ** core.TronGame.n_snakes;
+        const game = try games.TronGame.init(alloc);
+        const players: [games.TronGame.n_snakes]?Player = [_]?Player{null} ** games.TronGame.n_snakes;
         const queue = MessageQueue.init(alloc, 64);
 
         return .{
@@ -573,7 +574,7 @@ test "is lobby full and game switched to running" {
     _ = try s.addPlayer(tio);
 
     try s.startLobby(tio, 1);
-    try t.expectEqual(s.game.state, core.GameState.running);
+    try t.expectEqual(s.game.state, games.GameState.running);
 }
 
 test "remove player and replace idx with null" {

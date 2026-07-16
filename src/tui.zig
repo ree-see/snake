@@ -1,5 +1,7 @@
 const std = @import("std");
-const core = @import("core.zig");
+const core = @import("core");
+const games = @import("games");
+
 const print = std.debug.print;
 const termios = std.posix.termios;
 const STDIN_FILENO = std.posix.STDIN_FILENO;
@@ -29,7 +31,7 @@ const Grid = struct {
     }
 };
 
-pub fn render(grid: *Grid, game: *core.ClassicGame, writer: *std.Io.File.Writer) !void {
+pub fn render(grid: *Grid, game: *games.ClassicGame, writer: *std.Io.File.Writer) !void {
     const stdout = &writer.interface;
     const ws = termSize();
     const total_w = core.GRID_WIDTH + 2; // + 2 for left/right borders
@@ -122,7 +124,7 @@ pub fn main(init: std.process.Init) !void {
         stdout.flush() catch {};
     }
 
-    var game = try core.ClassicGame.init(gpa, rand);
+    var game = try games.ClassicGame.init(gpa, rand);
     defer game.deinit(gpa);
     defer _ = debug.deinit();
 
