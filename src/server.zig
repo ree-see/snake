@@ -4,6 +4,9 @@ const session = @import("session");
 const http = std.http;
 const crypto = std.crypto;
 const base64 = std.base64;
+const t = std.testing;
+const talloc = t.allocator;
+const tio = t.io;
 
 const MIME_MAP = std.StaticStringMap([]const u8).initComptime(.{
     .{ ".html", "text/html" },
@@ -32,33 +35,126 @@ const Connection = struct {
     }
 };
 
-// TODO: refactor function
-fn handleWs(io: std.Io, ws: *std.http.Server.WebSocket, s: *session.Session) !void {
-    const idx = s.addPlayer(io, ws) catch |err| {
+fn writeOneOutbound(
+    io: std.Io,
+    ws: *std.http.Server.WebSocket,
+    outbound: *std.Io.Queue(session.OutboundMsg),
+) !void {
+    const outbound_msg = try outbound.getOne(io);
+    try ws.writeMessage(outbound_msg.data[0..outbound_msg.len], outbound_msg.op);
+}
+
+fn readOneInbound(
+    s: *session.Session,
+    io: std.Io,
+    ws: *std.http.Server.WebSocket,
+    idx: usize,
+) !void {
+    const msg = try ws.readSmallMessage();
+    try s.pushMessage(io, .{ .idx = idx, .key_pressed = msg.data[0] });
+}
+
+// server > client bytes into ws.output
+test "write a queued message to websocket" {
+    var s = try session.Session.init(talloc);
+    defer s.deinit(tio);
+    var buf: [4096]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    var ws: std.http.Server.WebSocket = .{
+        .key = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+        .input = undefined,
+        .output = &w,
+    };
+
+    _ = try s.addPlayer(tio);
+    const msg = "hi";
+    try s.broadcast(tio, msg, .text); // each player receives outbound msg
+
+    const player = &s.players[0].?;
+    try writeOneOutbound(tio, &ws, &player.outbound); // first outbound msg is written to ws.output
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &.{ 0x81, 0x02, 'h', 'i' },
+        w.buffered(),
+    );
+}
+
+test "read a ws msg into the session queue" {
+    var s = try session.Session.init(talloc);
+    defer s.deinit(tio);
+    var buf: [4096]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    var input = [_]u8{ 0x81, 0x81, 0, 0, 0, 0, 'k' };
+    var r = std.Io.Reader.fixed(&input);
+    var ws: std.http.Server.WebSocket = .{
+        .key = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+        .input = &r,
+        .output = &w,
+    };
+    try readOneInbound(&s, tio, &ws, 0);
+
+    const expected = session.MessageQueue.Message{ .idx = 0, .key_pressed = 107 };
+    const actual = try s.popMessage(tio);
+
+    try t.expectEqual(expected, actual);
+}
+
+fn writeOutboundLoop(io: std.Io, ws: *std.http.Server.WebSocket, outbound: *std.Io.Queue(session.OutboundMsg)) std.Io.Cancelable!void {
+    while (true) {
+        writeOneOutbound(io, ws, outbound) catch |err| switch (err) {
+            error.Canceled => return error.Canceled,
+            error.Closed => return,
+            else => {
+                std.log.err("outbond ws writer failed : {}", .{err});
+                return;
+            },
+        };
+    }
+}
+
+fn handleWs(alloc: std.mem.Allocator, io: std.Io, ws: *std.http.Server.WebSocket, sman: *session.SessionManager, s: *session.Session) !void {
+    const idx = s.addPlayer(io) catch |err| {
         try ws.output.print("{}", .{err});
         try ws.output.flush();
         return err;
     };
+    defer sman.removeSession(alloc, io, s) catch |err| {
+        std.log.err("failed to remove session: {}", .{err});
+    };
+    defer s.removePlayer(io, idx) catch |err| {
+        std.log.err("failed to remove player {}: {}", .{ idx, err });
+    };
+
+    var conn_group: std.Io.Group = .init;
+    defer conn_group.cancel(io);
+    const player = &s.players[idx].?;
+    try conn_group.concurrent(
+        io,
+        writeOutboundLoop,
+        .{ io, ws, &player.outbound },
+    );
 
     while (true) {
-        const small_message = ws.readSmallMessage() catch break;
-        try ws.writeMessage(small_message.data, small_message.opcode);
-        s.pushMessage(io, .{ .idx = idx, .key_pressed = small_message.data[0] }) catch |err| {
-            std.log.err("{}", .{err});
-        };
+        try readOneInbound(s, io, ws, idx);
     }
 
-    s.removePlayer(io, idx) catch |err| {
-        std.log.err("{}", .{err});
-    };
     std.debug.print("Player {} disconnected", .{idx});
     return;
 }
 
-pub fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void {
-    defer {
-        conn.deinit();
-    }
+fn runConn(conn: *Connection, session_man: *session.SessionManager) std.Io.Cancelable!void {
+    handleConn(conn, session_man) catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => {
+            std.log.err("connection failed: {}", .{err});
+            return;
+        },
+    };
+}
+
+fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void {
+    defer conn.deinit();
     while (true) {
         var w_buf: [256]u8 = undefined;
         var writer = conn.stream.writer(conn.io, &w_buf);
@@ -79,7 +175,7 @@ pub fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void
                         return;
                     };
                     const s = try session_man.findOrCreateSession(conn.alloc, conn.io);
-                    handleWs(conn.io, &ws, s) catch |err| {
+                    handleWs(conn.alloc, conn.io, &ws, session_man, s) catch |err| {
                         std.log.err("{}", .{err});
                         return;
                     };
@@ -100,19 +196,20 @@ pub fn main(init: std.process.Init) !void {
     });
     const gpa = init.gpa;
     var sman = session.SessionManager.init();
-    defer sman.deinit(gpa);
+    defer sman.deinit(gpa, io);
 
+    var conn_group = std.Io.Group.init;
+    defer conn_group.cancel(io);
+
+    // accept loop
     while (true) {
         const conn = try gpa.create(Connection);
         conn.* = Connection.init(io, &listener, gpa) catch |err| {
-            std.debug.print("{}", .{err});
+            gpa.destroy(conn);
+            std.log.err("{}", .{err});
             continue;
         };
-        const thread = std.Thread.spawn(.{}, handleConn, .{ conn, &sman }) catch |err| {
-            std.debug.print("{}", .{err});
-            continue;
-        };
-        thread.detach();
+        try conn_group.concurrent(io, runConn, .{ conn, &sman });
     }
 }
 

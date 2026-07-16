@@ -76,6 +76,10 @@ pub fn build(b: *std.Build) void {
 
     const core_tests = b.addTest(.{ .root_module = core_mod });
     const session_tests = b.addTest(.{ .root_module = session_mod });
+    const server_tests = b.addTest(.{
+        .root_module = server.root_module,
+    });
+    const run_server_tests = b.addRunArtifact(server_tests);
     const run_core_tests = b.addRunArtifact(core_tests);
     const run_session_tests = b.addRunArtifact(session_tests);
 
@@ -83,4 +87,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_session_tests.step);
+    test_step.dependOn(&run_server_tests.step);
 }
