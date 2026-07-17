@@ -2,6 +2,7 @@
 zig-out/
 .claude/
 CLAUDE.md
+AGENTS.md
 .DS_Store
 .pi/
 server
