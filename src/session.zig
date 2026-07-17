@@ -174,6 +174,10 @@ pub const Session = struct {
         self.run_group.cancel(io);
         self.game.deinit(self.alloc);
         self.queue.deinit(self.alloc);
+        for (self.players.items) |player| {
+            self.alloc.destroy(player);
+        }
+        self.players.deinit(self.alloc);
     }
 
     pub fn canJoin(self: *Session, io: std.Io) SessionError!bool {
@@ -389,11 +393,11 @@ test "enqueue a msg for a player in a sesison" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(tio);
+    _ = try s.addPlayer(talloc, tio);
 
     try s.broadcast(tio, "{{ \"countdown\": 1 }}", .text);
 
-    const actual = try s.players[0].?.outbound.getOne(tio);
+    const actual = try s.players.items[0].outbound.getOne(tio);
     const expected_text = "{{ \"countdown\": 1 }}";
     const expected_op: std.http.Server.WebSocket.Opcode = .text;
 
@@ -406,14 +410,14 @@ test "two msg FIFO test" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(tio);
+    _ = try s.addPlayer(talloc, tio);
 
     try s.broadcast(tio, "{{ \"countdown\": 2 }}", .text); // first in should be first out
     try s.broadcast(tio, "{{ \"countdown\": 1 }}", .text);
 
-    const first = try s.players[0].?.outbound.getOne(tio);
+    const first = try s.players.items[0].outbound.getOne(tio);
     const first_expected = "{{ \"countdown\": 2 }}";
-    const second = try s.players[0].?.outbound.getOne(tio);
+    const second = try s.players.items[0].outbound.getOne(tio);
     const second_expected = "{{ \"countdown\": 1 }}";
     try t.expectEqualStrings(first_expected, first.data[0..first.len]);
     try t.expectEqualStrings(second_expected, second.data[0..second.len]);
@@ -443,8 +447,8 @@ test "boardcast drops the oldest frame for a full player queue" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(tio);
-    const player = &s.players[0].?;
+    _ = try s.addPlayer(talloc, tio);
+    const player = s.players.items[0];
     const msgs = [_][]const u8{
         "0", "1", "2", "3", "4",  "5",
         "6", "7", "8", "9", "10",
@@ -497,13 +501,13 @@ test "drain changes the direction of snakes" {
     defer s.deinit(tio);
 
     try s.queue.push(talloc, .{ .idx = 2, .key_pressed = 107 });
-    try s.queue.push(talloc, .{ .idx = 1, .key_pressed = 108 });
+    try s.queue.push(talloc, .{ .idx = 1, .key_pressed = 106 });
     try s.queue.push(talloc, .{ .idx = 4, .key_pressed = 107 });
     try s.drain(tio);
 
     const snakes = s.game.snakes.slice();
     try t.expectEqual(.down, snakes.items(.direction)[2]);
-    try t.expectEqual(.right, snakes.items(.direction)[1]);
+    try t.expectEqual(.left, snakes.items(.direction)[1]);
     try t.expectEqual(.down, snakes.items(.direction)[4]);
 }
 
@@ -545,11 +549,11 @@ test "is lobby full" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
 
     try t.expect(try s.isFull(tio));
 }
@@ -558,13 +562,13 @@ test "is lobby full error" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
 
-    const full_lobby_err = s.addPlayer(tio) catch |err| err;
+    const full_lobby_err = s.addPlayer(talloc, tio) catch |err| err;
 
     try t.expectError(Session.SessionError.LobbyFull, full_lobby_err);
 }
@@ -573,11 +577,11 @@ test "is lobby full and game switched to running" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
-    _ = try s.addPlayer(tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addPlayer(talloc, tio);
 
     try s.startLobby(tio, 1);
     try t.expectEqual(s.game.state, games.GameState.running);
@@ -587,8 +591,8 @@ test "remove player and replace idx with null" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(tio);
-    try s.removePlayer(tio, 0);
+    const player_idx = try s.addPlayer(talloc, tio);
+    try s.removePlayer(tio, player_idx);
 
-    try t.expect((s.players[0] == null));
+    try t.expectEqual(Player.Status.disconnected, s.players.items[player_idx].status);
 }

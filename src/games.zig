@@ -50,12 +50,27 @@ pub const TronGame = struct {
 
     const DeathResult = struct { died: u8, killer: ?u8 };
 
-    pub fn init(alloc: std.mem.Allocator, spawns: []const Spawn) !TronGame {
+    pub fn init(alloc: std.mem.Allocator, _: []const Spawn) !TronGame {
         var snakes: std.MultiArrayList(core.Snake) = .empty;
         const deltas: std.ArrayList(Delta) = .empty;
-        for (spawns) |spawn| {
-            try snakes.append(alloc, try core.Snake.initAt(alloc, spawn.pos, spawn.direction));
-        }
+        // for (spawns, 0..) |spawn, i| {
+        //     std.debug.print("[{}] {} ({}, {})\n", .{ i, spawn.direction, spawn.pos.x, spawn.pos.y });
+        //     try snakes.append(alloc, try core.Snake.initAt(alloc, spawn.pos, spawn.direction));
+        // }
+        //
+
+        const dir_a, const pos_a = core.gridCorner(.down);
+        const dir_b, const pos_b = core.gridCorner(.up);
+        const dir_c, const pos_c = core.gridCorner(.left);
+        const dir_d, const pos_d = core.gridCorner(.right);
+        const pos_e = core.gridCenter();
+        const dir_e: core.Snake.Direction = .left;
+
+        try snakes.append(alloc, try core.Snake.initAt(alloc, pos_a, dir_a));
+        try snakes.append(alloc, try core.Snake.initAt(alloc, pos_b, dir_b));
+        try snakes.append(alloc, try core.Snake.initAt(alloc, pos_c, dir_c));
+        try snakes.append(alloc, try core.Snake.initAt(alloc, pos_d, dir_d));
+        try snakes.append(alloc, try core.Snake.initAt(alloc, pos_e, dir_e));
 
         return .{
             .state = .lobby,
@@ -68,6 +83,7 @@ pub const TronGame = struct {
         // Each body owns its own heap allocation — free them before the columns.
         for (self.snakes.items(.body)) |*body| body.deinit(alloc);
         self.snakes.deinit(alloc);
+        self.deltas.deinit(alloc);
     }
 
     pub fn encodeDeltas(self: *const TronGame, buf: []u8) []u8 {
@@ -85,14 +101,21 @@ pub const TronGame = struct {
     }
 
     // Snapshot each live snake's next head cell; dead snakes are null.
-    pub fn nextPositions(self: *TronGame) void {
+    pub fn nextPositions(self: *TronGame, alloc: std.mem.Allocator) !void {
         const s = self.snakes.slice();
         const dead = s.items(.is_dead);
         const dir = s.items(.direction);
         const body = s.items(.body);
 
-        for (0..self.snakes.len) |i| {
-            self.deltas.items[i].nextPos = if (dead[i]) null else core.nextPos(dir[i], body[i].items[0]);
+        var delta: Delta = .init;
+        for (dead, 0..) |is_dead, i| {
+            if (is_dead) {
+                try self.deltas.append(alloc, delta);
+                continue;
+            }
+            const next_pos = core.nextPos(dir[i], body[i].items[0]);
+            delta.nextPos = next_pos;
+            try self.deltas.append(alloc, delta);
         }
     }
 
@@ -172,9 +195,9 @@ pub const TronGame = struct {
 
         for (self.deltas.items) |maybe_death| {
             const death = maybe_death.death orelse continue;
-            dead[death.died] = true;
-            body[death.died].clearRetainingCapacity();
-            if (death.killer) |killer| kills[killer] += 1;
+            dead[death.died] = true; // update snake status
+            body[death.died].clearRetainingCapacity(); // snake body struct is still allocated just len 0
+            if (death.killer) |killer| kills[killer] += 1; // grant kill to killer
         }
     }
 
@@ -189,6 +212,7 @@ pub const TronGame = struct {
                 dead_count += 1;
                 continue;
             }
+
             if (self.deltas.items[i].nextPos) |target| {
                 try body[i].insert(alloc, 0, target);
             }
@@ -196,15 +220,13 @@ pub const TronGame = struct {
         if (dead_count == self.snakes.len - 1 or dead_count == self.snakes.len) self.state = .over;
     }
 
-    pub fn resetDelta(self: *TronGame) void {
-        self.nextPositions();
-        for (0..self.snakes.len) |i| {
-            self.deltas.items[i].death = null;
-        }
+    pub fn resetDelta(self: *TronGame, alloc: std.mem.Allocator) !void {
+        self.deltas.clearRetainingCapacity();
+        try self.nextPositions(alloc);
     }
 
     pub fn tick(self: *TronGame, alloc: std.mem.Allocator) !void {
-        self.resetDelta();
+        try self.resetDelta(alloc);
         self.checkBodyCollision();
         self.checkH2HCollision();
         self.checkSelfCollision();
@@ -218,7 +240,7 @@ test "step into the wall annotates snake is dead and hit a wall" {
     defer game.deinit(talloc);
 
     game.snakes.items(.direction)[0] = .left; // next() is null off the left edge
-    game.resetDelta();
+    try game.resetDelta(talloc);
     game.checkSelfCollision();
 
     const death_res = game.deltas.items[0].death;
@@ -238,7 +260,7 @@ test "step into own body ends the game" {
     try body.append(talloc, .{ .x = 11, .y = 11 });
     try body.append(talloc, .{ .x = 11, .y = 10 }); // tail (the cell we hit)
     game.snakes.items(.direction)[0] = .right;
-    game.resetDelta();
+    try game.resetDelta(talloc);
     game.checkSelfCollision();
 
     const death_res = game.deltas.items[0].death;
@@ -349,14 +371,14 @@ test "encodeDeltas packs every snake's delta into one flat byte buffer" {
     var game = try TronGame.init(talloc, Spawn.init());
     defer game.deinit(talloc);
 
-    game.deltas.items[0] = .{ .death = .{ .died = 0, .killer = 1 }, .nextPos = .{ .x = 1, .y = 2 } };
-    game.deltas.items[1] = .{ .death = null, .nextPos = .{ .x = 5, .y = 6 } };
-    game.deltas.items[2] = .{ .death = .{ .died = 2, .killer = null }, .nextPos = null };
-    game.deltas.items[3] = .{ .death = null, .nextPos = null };
-    game.deltas.items[4] = .{ .death = .{ .died = 4, .killer = 0 }, .nextPos = .{ .x = 10, .y = 20 } };
+    try game.deltas.append(talloc, .{ .death = .{ .died = 0, .killer = 1 }, .nextPos = .{ .x = 1, .y = 2 } });
+    try game.deltas.append(talloc, .{ .death = null, .nextPos = .{ .x = 5, .y = 6 } });
+    try game.deltas.append(talloc, .{ .death = .{ .died = 2, .killer = null }, .nextPos = null });
+    try game.deltas.append(talloc, .{ .death = null, .nextPos = null });
+    try game.deltas.append(talloc, .{ .death = .{ .died = 4, .killer = 0 }, .nextPos = .{ .x = 10, .y = 20 } });
 
     var buf: [20]u8 = undefined;
-    const encoded = game.encodeDeltas(&buf);
+    _ = game.encodeDeltas(&buf);
     const expected = [20]u8{
         0x07, 1, 1,  2,
         0x04, 0, 5,  6,
@@ -365,7 +387,11 @@ test "encodeDeltas packs every snake's delta into one flat byte buffer" {
         0x07, 0, 10, 20,
     };
 
-    try t.expectEqual(expected, encoded);
+    // for (encoded, 0..) |act, i| {
+    //     std.debug.print("{}|{}\n", .{ act, expected[i] });
+    // }
+
+    try t.expectEqual(expected, buf);
 }
 
 test "collision h2h test" {
@@ -393,6 +419,8 @@ test "collision h2h test" {
 pub const Delta = struct {
     death: ?TronGame.DeathResult,
     nextPos: ?core.Position,
+
+    const init: Delta = .{ .death = null, .nextPos = null };
 
     pub const encoded_len: usize = 4;
     const Header = packed struct {
