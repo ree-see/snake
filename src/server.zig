@@ -67,11 +67,11 @@ test "write a queued message to websocket" {
         .output = &w,
     };
 
-    _ = try s.addPlayer(tio);
+    _ = try s.addPlayer(talloc, tio);
     const msg = "hi";
     try s.broadcast(tio, msg, .text); // each player receives outbound msg
 
-    const player = &s.players[0].?;
+    const player = s.players.items[0];
     try writeOneOutbound(tio, &ws, &player.outbound); // first outbound msg is written to ws.output
 
     try std.testing.expectEqualSlices(
@@ -115,7 +115,7 @@ fn writeOutboundLoop(io: std.Io, ws: *std.http.Server.WebSocket, outbound: *std.
 }
 
 fn handleWs(alloc: std.mem.Allocator, io: std.Io, ws: *std.http.Server.WebSocket, sman: *session.SessionManager, s: *session.Session) !void {
-    const idx = s.addPlayer(io) catch |err| {
+    const idx = s.addPlayer(alloc, io) catch |err| {
         try ws.output.print("{}", .{err});
         try ws.output.flush();
         return err;
@@ -129,7 +129,7 @@ fn handleWs(alloc: std.mem.Allocator, io: std.Io, ws: *std.http.Server.WebSocket
 
     var conn_group: std.Io.Group = .init;
     defer conn_group.cancel(io);
-    const player = &s.players[idx].?;
+    const player = s.players.items[idx];
     try conn_group.concurrent(
         io,
         writeOutboundLoop,

@@ -143,9 +143,10 @@ pub const Session = struct {
     mutex: std.Io.Mutex,
     run_group: std.Io.Group,
     game: games.TronGame,
-    players: [games.TronGame.n_snakes]?Player,
+    players: std.ArrayList(*Player),
     queue: MessageQueue,
     count: u64 = 0,
+    max_players: u8 = 5,
 
     const SessionError = error{
         LockedMutex,
@@ -155,8 +156,8 @@ pub const Session = struct {
     pub fn init(alloc: std.mem.Allocator) !Session {
         const mutex = std.Io.Mutex.init;
 
-        const game = try games.TronGame.init(alloc);
-        const players: [games.TronGame.n_snakes]?Player = [_]?Player{null} ** games.TronGame.n_snakes;
+        const game = try games.TronGame.init(alloc, games.Spawn.init());
+        const players: std.ArrayList(*Player) = .empty;
         const queue = MessageQueue.init(alloc, 64);
 
         return .{
@@ -201,24 +202,31 @@ pub const Session = struct {
         }
     }
 
-    pub fn addPlayer(self: *Session, io: std.Io) SessionError!usize {
+    pub fn addPlayer(self: *Session, alloc: std.mem.Allocator, io: std.Io) !usize {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
-        return self.addPlayerLocked();
+        return self.addPlayerLocked(alloc);
     }
 
-    pub fn addPlayerLocked(self: *Session) SessionError!usize {
-        for (self.players, 0..) |p, i| {
-            if (p != null) continue;
-            const new_player = Player.new(i);
-            self.players[i] = new_player;
-            const player = &self.players[i].?;
-            player.outbound = std.Io.Queue(OutboundMsg).init(&player.outbound_buf);
-            self.count += 1;
+    pub fn addPlayerLocked(self: *Session, alloc: std.mem.Allocator) !usize {
+        if (self.isFullLocked()) return SessionError.LobbyFull;
+
+        const player = try alloc.create(Player);
+        errdefer alloc.destroy(player);
+        player.* = Player.init;
+        player.outbound = std.Io.Queue(OutboundMsg).init(&player.outbound_buf);
+
+        // replace first disconnected player with new player
+        for (self.players.items, 0..) |existing, i| {
+            if (existing.status != .disconnected) continue;
+            player.idx = i;
+            self.players.items[i] = player;
             return i;
         }
 
-        return SessionError.LobbyFull;
+        player.idx = self.players.items.len;
+        try self.players.append(alloc, player);
+        return player.idx;
     }
 
     pub fn removePlayer(self: *Session, io: std.Io, players_idx: usize) SessionError!void {
@@ -228,7 +236,7 @@ pub const Session = struct {
     }
 
     pub fn removePlayerLocked(self: *Session, players_idx: usize) void {
-        self.players[players_idx] = null;
+        self.players.items[players_idx].status = .disconnected;
     }
 
     pub fn isFull(self: *Session, io: std.Io) SessionError!bool {
@@ -238,10 +246,9 @@ pub const Session = struct {
     }
 
     pub fn isFullLocked(self: *Session) bool {
-        for (self.players) |player| {
-            if (player == null) {
-                return false;
-            }
+        if (self.players.items.len != self.max_players) return false;
+        for (self.players.items) |player| {
+            if (player.status != .connected) return false;
         }
         return true;
     }
@@ -263,7 +270,8 @@ pub const Session = struct {
             std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), std.Io.Clock.awake) catch return;
 
             // broadcast next render frame
-            const payload = self.game.encodeDeltas();
+            var buf: [20]u8 = undefined;
+            const payload = self.game.encodeDeltas(&buf);
             try self.broadcast(io, payload[0..], .binary);
             for (dead, 0..) |is_dead, i| {
                 if (is_dead) {
@@ -296,20 +304,18 @@ pub const Session = struct {
     // This method only just pushes a message to each players queue doesn't actually broadcasts
     pub fn broadcastLocked(self: *Session, io: std.Io, msg: []const u8, op: std.http.Server.WebSocket.Opcode) !void {
         if (msg.len > OutboundMsg.max_frame_size) return error.MessageTooLarge;
-        for (&self.players) |*maybe_player| {
-            if (maybe_player.*) |*p| {
-                var outbound: OutboundMsg = .{
-                    .data = undefined,
-                    .len = msg.len,
-                    .op = op,
-                };
-                @memcpy(outbound.data[0..outbound.len], msg);
-                const queued = try p.outbound.put(io, &.{outbound}, 0);
-                if (queued == 0) {
-                    var dropped: [1]OutboundMsg = undefined;
-                    _ = try p.outbound.get(io, &dropped, 0);
-                    std.debug.assert(try p.outbound.put(io, &.{outbound}, 0) == 1);
-                }
+        for (self.players.items) |player| {
+            var outbound: OutboundMsg = .{
+                .data = undefined,
+                .len = msg.len,
+                .op = op,
+            };
+            @memcpy(outbound.data[0..outbound.len], msg);
+            const queued = try player.outbound.put(io, &.{outbound}, 0);
+            if (queued == 0) {
+                var dropped: [1]OutboundMsg = undefined;
+                _ = try player.outbound.get(io, &dropped, 0);
+                std.debug.assert(try player.outbound.put(io, &.{outbound}, 0) == 1);
             }
         }
     }
@@ -363,8 +369,9 @@ pub const Session = struct {
     }
 
     fn hasNoPlayersLocked(self: *Session) bool {
-        for (self.players) |player| {
-            if (player != null) return false;
+        if (self.players.items.len == 0) return true;
+        for (self.players.items) |player| {
+            if (player.status == .connected) return false;
         }
         return true;
     }
@@ -416,21 +423,20 @@ pub const Player = struct {
     idx: usize,
     outbound_buf: [10]OutboundMsg,
     outbound: std.Io.Queue(OutboundMsg),
-    snake: ?usize,
+    status: Status,
+
+    const Status = enum {
+        connected,
+        disconnected,
+        dead,
+    };
 
     const init: Player = .{
         .idx = undefined,
         .outbound_buf = undefined,
         .outbound = undefined,
-        .snake = null,
+        .status = .connected,
     };
-
-    pub fn new(idx: u64) Player {
-        var player: Player = Player.init;
-        player.idx = idx;
-        player.snake = idx;
-        return player;
-    }
 };
 
 test "boardcast drops the oldest frame for a full player queue" {

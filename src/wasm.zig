@@ -6,7 +6,7 @@ var game: games.TronGame = undefined;
 
 export fn init() void {
     const walloc = std.heap.wasm_allocator;
-    game = games.TronGame.init(walloc) catch @panic("OOM error");
+    game = games.TronGame.init(walloc, games.Spawn.init()) catch @panic("OOM error");
 }
 
 export fn tick() void {

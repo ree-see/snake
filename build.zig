@@ -71,7 +71,7 @@ pub fn build(b: *std.Build) void {
     const wasm_step = b.step("wasm", "Create wasm bin");
     wasm_step.dependOn(&b.addInstallArtifact(wasm, .{}).step);
 
-    // `zig build test` -- run the `test {}` blocks in src/tui.zig.
+    // `zig build test` -- run all tests.
     const exe_tests = b.addTest(.{
         .root_module = classic.root_module,
     });
