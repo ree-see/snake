@@ -513,12 +513,20 @@ test "drain changes the direction of snakes" {
     try s.game.spawnSnake(talloc, rand);
     try s.game.spawnSnake(talloc, rand);
 
+    const snakes = s.game.snakes.slice();
+    const dirs = snakes.items(.direction);
+    const prev_dirs2 = dirs[2];
+    const prev_dirs1 = dirs[1];
+    const prev_dirs4 = dirs[4];
+    dirs[2] = core.setDirection(prev_dirs2, 106);
+    dirs[1] = core.setDirection(prev_dirs1, 105);
+    dirs[4] = core.setDirection(prev_dirs4, 106);
+
     try s.queue.push(talloc, .{ .idx = 2, .key_pressed = 107 });
     try s.queue.push(talloc, .{ .idx = 1, .key_pressed = 106 });
     try s.queue.push(talloc, .{ .idx = 4, .key_pressed = 107 });
     try s.drain(tio);
 
-    const snakes = s.game.snakes.slice();
     try t.expectEqual(.down, snakes.items(.direction)[2]);
     try t.expectEqual(.left, snakes.items(.direction)[1]);
     try t.expectEqual(.down, snakes.items(.direction)[4]);
