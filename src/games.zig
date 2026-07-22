@@ -26,19 +26,17 @@ pub const Spawn = struct {
     pos: core.Position,
     direction: core.Snake.Direction,
 
-    pub fn init() []const Spawn {
-        const dir_a, const pos_a = core.gridCorner(.down);
-        const dir_b, const pos_b = core.gridCorner(.up);
-        const dir_c, const pos_c = core.gridCorner(.left);
-        const dir_d, const pos_d = core.gridCorner(.right);
-        const pos_e = core.gridCenter();
-        const dir_e: core.Snake.Direction = .left;
-        return &.{
-            .{ .pos = pos_a, .direction = dir_a },
-            .{ .pos = pos_b, .direction = dir_b },
-            .{ .pos = pos_c, .direction = dir_c },
-            .{ .pos = pos_d, .direction = dir_d },
-            .{ .pos = pos_e, .direction = dir_e },
+    pub fn new(rand: std.Random) !Spawn {
+        const x = rand.intRangeLessThan(u8, 0, core.GRID_WIDTH - 5);
+        const y = rand.intRangeLessThan(u8, 0, core.GRID_HEIGHT - 5);
+        const dir = try core.dirFromKeyPress(rand.intRangeLessThan(u8, 105, 109));
+
+        return .{
+            .pos = .{
+                .x = x,
+                .y = y,
+            },
+            .direction = dir,
         };
     }
 };
@@ -50,40 +48,29 @@ pub const TronGame = struct {
 
     const DeathResult = struct { died: u8, killer: ?u8 };
 
-    pub fn init(alloc: std.mem.Allocator, _: []const Spawn) !TronGame {
-        var snakes: std.MultiArrayList(core.Snake) = .empty;
-        const deltas: std.ArrayList(Delta) = .empty;
-        // for (spawns, 0..) |spawn, i| {
-        //     std.debug.print("[{}] {} ({}, {})\n", .{ i, spawn.direction, spawn.pos.x, spawn.pos.y });
-        //     try snakes.append(alloc, try core.Snake.initAt(alloc, spawn.pos, spawn.direction));
-        // }
-        //
-
-        const dir_a, const pos_a = core.gridCorner(.down);
-        const dir_b, const pos_b = core.gridCorner(.up);
-        const dir_c, const pos_c = core.gridCorner(.left);
-        const dir_d, const pos_d = core.gridCorner(.right);
-        const pos_e = core.gridCenter();
-        const dir_e: core.Snake.Direction = .left;
-
-        try snakes.append(alloc, try core.Snake.initAt(alloc, pos_a, dir_a));
-        try snakes.append(alloc, try core.Snake.initAt(alloc, pos_b, dir_b));
-        try snakes.append(alloc, try core.Snake.initAt(alloc, pos_c, dir_c));
-        try snakes.append(alloc, try core.Snake.initAt(alloc, pos_d, dir_d));
-        try snakes.append(alloc, try core.Snake.initAt(alloc, pos_e, dir_e));
-
-        return .{
-            .state = .lobby,
-            .snakes = snakes,
-            .deltas = deltas,
-        };
-    }
+    pub const init: TronGame = .{
+        .state = .lobby,
+        .snakes = .empty,
+        .deltas = .empty,
+    };
 
     pub fn deinit(self: *TronGame, alloc: std.mem.Allocator) void {
         // Each body owns its own heap allocation — free them before the columns.
         for (self.snakes.items(.body)) |*body| body.deinit(alloc);
         self.snakes.deinit(alloc);
         self.deltas.deinit(alloc);
+    }
+
+    pub fn spawnSnake(self: *TronGame, alloc: std.mem.Allocator, rand: std.Random) !void {
+        var spawn = try Spawn.new(rand);
+
+        for (self.snakes.items(.body)) |body| {
+            while (!core.bodyContains(body.items, spawn.pos)) {
+                spawn = try Spawn.new(rand);
+            }
+        }
+
+        try self.snakes.append(alloc, try core.Snake.initAt(alloc, spawn.pos, spawn.direction));
     }
 
     pub fn encodeDeltas(self: *const TronGame, buf: []u8) []u8 {
@@ -235,10 +222,11 @@ pub const TronGame = struct {
     }
 };
 
-test "step into the wall annotates snake is dead and hit a wall" {
-    var game = try TronGame.init(talloc, Spawn.init());
+test "wall collision test" {
+    var game = TronGame.init;
     defer game.deinit(talloc);
 
+    try game.snakes.append(talloc, try core.Snake.initAt(talloc, .{ .x = 0, .y = 0 }, .down));
     game.snakes.items(.direction)[0] = .left; // next() is null off the left edge
     try game.resetDelta(talloc);
     game.checkSelfCollision();
@@ -248,11 +236,12 @@ test "step into the wall annotates snake is dead and hit a wall" {
     try t.expectEqual(0, death_res.?.died);
 }
 
-test "step into own body ends the game" {
-    var game = try TronGame.init(talloc, Spawn.init());
+test "self collision test" {
+    var game = TronGame.init;
     defer game.deinit(talloc);
 
     // A 2x2 loop: head at {10,10} moving right lands on the tail at {11,10}.
+    try game.snakes.append(talloc, try core.Snake.initAt(talloc, .{ .x = 0, .y = 0 }, .right));
     const body = &game.snakes.items(.body)[0];
     body.clearRetainingCapacity();
     try body.append(talloc, .{ .x = 10, .y = 10 }); // head
@@ -268,9 +257,12 @@ test "step into own body ends the game" {
     try t.expectEqual(0, death_res.?.died);
 }
 
-test "simple game tick test" {
-    var game = try TronGame.init(talloc, Spawn.init());
+test "tick test" {
+    var game = TronGame.init;
     defer game.deinit(talloc);
+
+    try game.snakes.append(talloc, try core.Snake.initAt(talloc, .{ .x = 0, .y = 0 }, .down));
+    try game.snakes.append(talloc, try core.Snake.initAt(talloc, .{ .x = 10, .y = 10 }, .down));
 
     try game.tick(talloc);
 
@@ -278,10 +270,14 @@ test "simple game tick test" {
     try t.expectEqual(2, game.snakes.items(.body)[1].items.len);
 }
 
-test "game tick annotate snake is dead" {
-    var game = try TronGame.init(talloc, Spawn.init());
+test "tick mutates snakes is dead test" {
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+    var game = TronGame.init;
     defer game.deinit(talloc);
 
+    try game.spawnSnake(talloc, rand);
     game.snakes.items(.body)[0].items[0] = .{ .x = 0, .y = 16 };
     game.snakes.items(.direction)[0] = .left; // next() is null off the left edge
     try game.tick(talloc);
@@ -289,23 +285,32 @@ test "game tick annotate snake is dead" {
     try t.expect(game.snakes.items(.is_dead)[0]);
 }
 
-test "game tick snakes dies check if dead snake body is gone" {
-    var game = try TronGame.init(talloc, Spawn.init());
+test "when snake dies body is cleared test" {
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+    var game = TronGame.init;
     defer game.deinit(talloc);
 
+    try game.spawnSnake(talloc, rand);
     game.snakes.items(.body)[0].items[0] = .{ .x = 0, .y = 16 };
     game.snakes.items(.direction)[0] = .left; // next() is null off the left edge
     try game.tick(talloc);
     try game.tick(talloc);
 
     try t.expectEqual(0, game.snakes.items(.body)[0].items.len);
-    try t.expect(!game.snakes.items(.is_dead)[1]);
+    try t.expect(game.snakes.items(.is_dead)[0]);
 }
 
 test "advanceSnake sets game state to dead with one alive snake" {
-    var game = try TronGame.init(talloc, Spawn.init());
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+    var game = TronGame.init;
     defer game.deinit(talloc);
 
+    try game.spawnSnake(talloc, rand);
+    try game.spawnSnake(talloc, rand);
     while (game.state != .over) {
         try game.tick(talloc);
     }
@@ -319,13 +324,18 @@ test "advanceSnake sets game state to dead with one alive snake" {
         if (is_dead) dead_count += 1;
     }
 
-    try t.expectEqual(5, dead_count);
+    try t.expectEqual(1, dead_count);
 }
 
 test "collision with other snakes body" {
-    var game = try TronGame.init(talloc, Spawn.init());
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+    var game = TronGame.init;
     defer game.deinit(talloc);
 
+    try game.spawnSnake(talloc, rand);
+    try game.spawnSnake(talloc, rand);
     const bodies = game.snakes.items(.body);
     const dirs = game.snakes.items(.direction);
 
@@ -346,9 +356,14 @@ test "collision with other snakes body" {
 }
 
 test "collision with other snakes body adds to kill count" {
-    var game = try TronGame.init(talloc, Spawn.init());
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+    var game = TronGame.init;
     defer game.deinit(talloc);
 
+    try game.spawnSnake(talloc, rand);
+    try game.spawnSnake(talloc, rand);
     const bodies = game.snakes.items(.body);
     const dirs = game.snakes.items(.direction);
 
@@ -368,7 +383,7 @@ test "collision with other snakes body adds to kill count" {
 }
 
 test "encodeDeltas packs every snake's delta into one flat byte buffer" {
-    var game = try TronGame.init(talloc, Spawn.init());
+    var game = TronGame.init;
     defer game.deinit(talloc);
 
     try game.deltas.append(talloc, .{ .death = .{ .died = 0, .killer = 1 }, .nextPos = .{ .x = 1, .y = 2 } });
@@ -387,16 +402,18 @@ test "encodeDeltas packs every snake's delta into one flat byte buffer" {
         0x07, 0, 10, 20,
     };
 
-    // for (encoded, 0..) |act, i| {
-    //     std.debug.print("{}|{}\n", .{ act, expected[i] });
-    // }
-
     try t.expectEqual(expected, buf);
 }
 
 test "collision h2h test" {
-    var game = try TronGame.init(talloc, Spawn.init());
+    var game = TronGame.init;
     defer game.deinit(talloc);
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    try game.spawnSnake(talloc, rand);
+    try game.spawnSnake(talloc, rand);
 
     const bodies = game.snakes.items(.body);
     const dirs = game.snakes.items(.direction);

@@ -54,6 +54,15 @@ pub fn setDirection(prev_dir: Snake.Direction, key_press: u8) Snake.Direction {
     };
 }
 
+pub fn dirFromKeyPress(key_press: u8) !Snake.Direction {
+    return switch (key_press) {
+        105 => .up,
+        106 => .left,
+        107 => .down,
+        108 => .right,
+        else => error.NotADirection,
+    };
+}
 pub const Position = extern struct {
     x: u8,
     y: u8,

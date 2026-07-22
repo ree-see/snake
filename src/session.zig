@@ -30,7 +30,7 @@ pub const SessionManager = struct {
     }
 
     pub fn runSession(s: *Session, io: std.Io) std.Io.Cancelable!void {
-        s.run(io) catch |err| switch (err) {
+        s.run(s.alloc, io) catch |err| switch (err) {
             error.Canceled => return error.Canceled,
             else => {
                 std.log.err("session failed: {}", .{err});
@@ -154,18 +154,14 @@ pub const Session = struct {
     };
 
     pub fn init(alloc: std.mem.Allocator) !Session {
-        const mutex = std.Io.Mutex.init;
-
-        const game = try games.TronGame.init(alloc, games.Spawn.init());
-        const players: std.ArrayList(*Player) = .empty;
         const queue = MessageQueue.init(alloc, 64);
 
         return .{
             .alloc = alloc,
-            .mutex = mutex,
+            .mutex = .init,
             .run_group = .init,
-            .game = game,
-            .players = players,
+            .game = .init,
+            .players = .empty,
             .queue = queue,
         };
     }
@@ -328,7 +324,7 @@ pub const Session = struct {
         self.game.state = .over;
     }
 
-    pub fn startLobby(self: *Session, io: std.Io, countdown: usize) !void {
+    pub fn startLobby(self: *Session, alloc: std.mem.Allocator, io: std.Io, rand: std.Random, countdown: usize) !void {
         while (!try self.isFull(io)) {
             std.Io.sleep(io, std.Io.Duration.fromMilliseconds(500), std.Io.Clock.awake) catch return;
         } else {
@@ -339,12 +335,19 @@ pub const Session = struct {
                 try self.broadcast(io, msg, .text);
             }
 
+            for (self.players.items) |_| {
+                try self.game.spawnSnake(alloc, rand);
+            }
             self.game.state = .running;
         }
     }
 
-    pub fn run(self: *Session, io: std.Io) !void {
-        try self.startLobby(io, 20);
+    pub fn run(self: *Session, alloc: std.mem.Allocator, io: std.Io) !void {
+        const seed: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+        var prng = std.Random.DefaultPrng.init(seed);
+        const rand = prng.random();
+
+        try self.startLobby(alloc, io, rand, 20);
         try self.startGame(io);
     }
 
@@ -500,6 +503,16 @@ test "drain changes the direction of snakes" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    try s.game.spawnSnake(talloc, rand);
+    try s.game.spawnSnake(talloc, rand);
+    try s.game.spawnSnake(talloc, rand);
+    try s.game.spawnSnake(talloc, rand);
+    try s.game.spawnSnake(talloc, rand);
+
     try s.queue.push(talloc, .{ .idx = 2, .key_pressed = 107 });
     try s.queue.push(talloc, .{ .idx = 1, .key_pressed = 106 });
     try s.queue.push(talloc, .{ .idx = 4, .key_pressed = 107 });
@@ -536,6 +549,15 @@ test "push message to queue" {
 test "drain messages in queue" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    try s.game.spawnSnake(talloc, rand);
+    try s.game.spawnSnake(talloc, rand);
+    try s.game.spawnSnake(talloc, rand);
+    try s.game.spawnSnake(talloc, rand);
+    try s.game.spawnSnake(talloc, rand);
 
     try s.queue.push(talloc, .{ .idx = 2, .key_pressed = 107 });
     try s.queue.push(talloc, .{ .idx = 1, .key_pressed = 107 });
@@ -574,6 +596,9 @@ test "is lobby full error" {
 }
 
 test "is lobby full and game switched to running" {
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
@@ -583,7 +608,7 @@ test "is lobby full and game switched to running" {
     _ = try s.addPlayer(talloc, tio);
     _ = try s.addPlayer(talloc, tio);
 
-    try s.startLobby(tio, 1);
+    try s.startLobby(talloc, tio, rand, 1);
     try t.expectEqual(s.game.state, games.GameState.running);
 }
 
