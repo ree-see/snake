@@ -61,13 +61,20 @@ pub const TronGame = struct {
         self.deltas.deinit(alloc);
     }
 
+    pub fn isPosAvailable(self: *TronGame, pos: core.Position) bool {
+        const s = self.snakes.slice();
+        const bodies = s.items(.body);
+        for (bodies) |snakes_body| {
+            if (core.bodyContains(snakes_body.items, pos)) return false;
+        }
+        return true;
+    }
+
     pub fn spawnSnake(self: *TronGame, alloc: std.mem.Allocator, rand: std.Random) !void {
         var spawn = try Spawn.new(rand);
 
-        for (self.snakes.items(.body)) |body| {
-            while (!core.bodyContains(body.items, spawn.pos)) {
-                spawn = try Spawn.new(rand);
-            }
+        while (!self.isPosAvailable(spawn.pos)) {
+            spawn = try Spawn.new(rand);
         }
 
         try self.snakes.append(alloc, try core.Snake.initAt(alloc, spawn.pos, spawn.direction));
@@ -221,6 +228,38 @@ pub const TronGame = struct {
         try self.advanceSnakes(alloc);
     }
 };
+
+test "spawned snakes do not overlap" {
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+    var game = TronGame.init;
+    defer game.deinit(talloc);
+
+    try game.spawnSnake(talloc, rand);
+    try game.spawnSnake(talloc, rand);
+    try game.spawnSnake(talloc, rand);
+
+    const bodies = game.snakes.items(.body);
+    try t.expect(!core.bodyContains(bodies[0].items, bodies[1].items[0]));
+    try t.expect(!core.bodyContains(bodies[1].items, bodies[2].items[0]));
+    try t.expect(!core.bodyContains(bodies[0].items, bodies[2].items[0]));
+}
+
+test "isPosAvailable" {
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+    var game = TronGame.init;
+    defer game.deinit(talloc);
+    const spawn = try Spawn.new(rand);
+
+    try t.expect(game.isPosAvailable(spawn.pos));
+
+    for (0..10) |_| try game.spawnSnake(talloc, rand);
+
+    try t.expect(!game.isPosAvailable(game.snakes.get(0).body.items[0]));
+}
 
 test "wall collision test" {
     var game = TronGame.init;
