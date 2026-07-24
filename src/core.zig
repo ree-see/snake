@@ -30,10 +30,22 @@ pub fn gridCenter() Position {
 
 pub fn nextPos(direction: Snake.Direction, head: Position) ?Position {
     return switch (direction) {
-        .up => if (head.y == 0) null else .{ .x = head.x, .y = head.y - 1 },
-        .down => if (head.y == GRID_HEIGHT - 1) null else .{ .x = head.x, .y = head.y + 1 },
-        .left => if (head.x == 0) null else .{ .x = head.x - 1, .y = head.y },
-        .right => if (head.x == GRID_WIDTH - 1) null else .{ .x = head.x + 1, .y = head.y },
+        .up => if (head.y == 0) null else .{
+            .x = head.x,
+            .y = head.y - 1,
+        },
+        .down => if (head.y == GRID_HEIGHT - 1) null else .{
+            .x = head.x,
+            .y = head.y + 1,
+        },
+        .left => if (head.x == 0) null else .{
+            .x = head.x - 1,
+            .y = head.y,
+        },
+        .right => if (head.x == GRID_WIDTH - 1) null else .{
+            .x = head.x + 1,
+            .y = head.y,
+        },
     };
 }
 
@@ -44,13 +56,12 @@ pub fn bodyContains(body: []const Position, target: Position) bool {
     return false;
 }
 
-pub fn setDirection(prev_dir: Snake.Direction, key_press: u8) Snake.Direction {
-    return switch (key_press) {
-        105 => if (prev_dir != .down) .up else .down,
-        106 => if (prev_dir != .right) .left else .right,
-        107 => if (prev_dir != .up) .down else .up,
-        108 => if (prev_dir != .left) .right else .left,
-        else => prev_dir,
+pub fn setDirection(curr_dir: Snake.Direction, new_dir: Snake.Direction) Snake.Direction {
+    return switch (new_dir) {
+        .up => if (curr_dir != .down) new_dir else curr_dir,
+        .left => if (curr_dir != .right) new_dir else curr_dir,
+        .down => if (curr_dir != .up) new_dir else curr_dir,
+        .right => if (curr_dir != .left) new_dir else curr_dir,
     };
 }
 
@@ -60,7 +71,16 @@ pub fn dirFromKeyPress(key_press: u8) !Snake.Direction {
         106 => .left,
         107 => .down,
         108 => .right,
-        else => error.NotADirection,
+        else => error.NotValidKeyPress,
+    };
+}
+
+pub fn keyPressFromDir(dir: Snake.Direction) u8 {
+    return switch (dir) {
+        .up => 105,
+        .left => 106,
+        .down => 107,
+        .right => 108,
     };
 }
 pub const Position = extern struct {
@@ -143,22 +163,34 @@ test "next returns null at every wall edge" {
     // Up off the top row.
     snake.body.items[0] = .{ .x = 10, .y = 0 };
     snake.direction = .up;
-    try t.expectEqual(@as(?Position, null), nextPos(snake.direction, snake.body.items[0]));
+    try t.expectEqual(
+        @as(?Position, null),
+        nextPos(snake.direction, snake.body.items[0]),
+    );
 
     // Down off the bottom row.
     snake.body.items[0] = .{ .x = 10, .y = GRID_HEIGHT - 1 };
     snake.direction = .down;
-    try t.expectEqual(@as(?Position, null), nextPos(snake.direction, snake.body.items[0]));
+    try t.expectEqual(
+        @as(?Position, null),
+        nextPos(snake.direction, snake.body.items[0]),
+    );
 
     // Left off the first column.
     snake.body.items[0] = .{ .x = 0, .y = 10 };
     snake.direction = .left;
-    try t.expectEqual(@as(?Position, null), nextPos(snake.direction, snake.body.items[0]));
+    try t.expectEqual(
+        @as(?Position, null),
+        nextPos(snake.direction, snake.body.items[0]),
+    );
 
     // Right off the last column.
     snake.body.items[0] = .{ .x = GRID_WIDTH - 1, .y = 10 };
     snake.direction = .right;
-    try t.expectEqual(@as(?Position, null), nextPos(snake.direction, snake.body.items[0]));
+    try t.expectEqual(
+        @as(?Position, null),
+        nextPos(snake.direction, snake.body.items[0]),
+    );
 }
 
 test "next returns the adjacent cell for interior moves" {
@@ -168,13 +200,25 @@ test "next returns the adjacent cell for interior moves" {
     snake.body.items[0] = .{ .x = 10, .y = 10 };
 
     snake.direction = .up;
-    try t.expectEqual(@as(?Position, .{ .x = 10, .y = 9 }), nextPos(snake.direction, snake.body.items[0]));
+    try t.expectEqual(
+        @as(?Position, .{ .x = 10, .y = 9 }),
+        nextPos(snake.direction, snake.body.items[0]),
+    );
     snake.direction = .down;
-    try t.expectEqual(@as(?Position, .{ .x = 10, .y = 11 }), nextPos(snake.direction, snake.body.items[0]));
+    try t.expectEqual(
+        @as(?Position, .{ .x = 10, .y = 11 }),
+        nextPos(snake.direction, snake.body.items[0]),
+    );
     snake.direction = .left;
-    try t.expectEqual(@as(?Position, .{ .x = 9, .y = 10 }), nextPos(snake.direction, snake.body.items[0]));
+    try t.expectEqual(
+        @as(?Position, .{ .x = 9, .y = 10 }),
+        nextPos(snake.direction, snake.body.items[0]),
+    );
     snake.direction = .right;
-    try t.expectEqual(@as(?Position, .{ .x = 11, .y = 10 }), nextPos(snake.direction, snake.body.items[0]));
+    try t.expectEqual(
+        @as(?Position, .{ .x = 11, .y = 10 }),
+        nextPos(snake.direction, snake.body.items[0]),
+    );
 }
 
 test "contains reports head, body, and misses" {
@@ -208,32 +252,35 @@ test "setDirection ignores reversals into self" {
 
     // Key bytes: 105=up(i), 106=left(j), 107=down(k), 108=right(l).
     snake.direction = .right;
-    var prev_dir = snake.direction;
-    snake.direction = setDirection(prev_dir, 106); // left key while moving right -> ignored
+    var curr_dir = snake.direction;
+    snake.direction = setDirection(curr_dir, .left); // left key while moving right -> ignored
     try t.expectEqual(Snake.Direction.right, snake.direction);
 
     snake.direction = .left;
-    prev_dir = snake.direction;
-    snake.direction = setDirection(prev_dir, 108); // right key while moving left -> ignored
+    curr_dir = snake.direction;
+    snake.direction = setDirection(curr_dir, .right); // right key while moving left -> ignored
     try t.expectEqual(Snake.Direction.left, snake.direction);
 
     snake.direction = .up;
-    prev_dir = snake.direction;
-    snake.direction = setDirection(prev_dir, 107); // down key while moving up -> ignored
+    curr_dir = snake.direction;
+    snake.direction = setDirection(curr_dir, .down); // down key while moving up -> ignored
     try t.expectEqual(Snake.Direction.up, snake.direction);
 
     snake.direction = .down;
-    prev_dir = snake.direction;
-    snake.direction = setDirection(prev_dir, 105); // up key while moving down -> ignored
+    curr_dir = snake.direction;
+    snake.direction = setDirection(curr_dir, .up); // up key while moving down -> ignored
     try t.expectEqual(Snake.Direction.down, snake.direction);
 
     // A perpendicular turn is still accepted.
     snake.direction = .right;
-    prev_dir = snake.direction;
-    snake.direction = setDirection(prev_dir, 105); // up key while moving right -> applied
+    curr_dir = snake.direction;
+    snake.direction = setDirection(curr_dir, .up); // up key while moving right -> applied
     try t.expectEqual(Snake.Direction.up, snake.direction);
 }
 
 test "gridCenter is the middle of the board" {
-    try t.expectEqual(@as(Position, .{ .x = GRID_WIDTH / 2, .y = GRID_HEIGHT / 2 }), gridCenter());
+    try t.expectEqual(
+        @as(Position, .{ .x = GRID_WIDTH / 2, .y = GRID_HEIGHT / 2 }),
+        gridCenter(),
+    );
 }

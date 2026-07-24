@@ -1,5 +1,6 @@
 const std = @import("std");
 const session = @import("session");
+const core = @import("core");
 
 const http = std.http;
 const crypto = std.crypto;
@@ -21,7 +22,11 @@ const Connection = struct {
     io: std.Io,
     alloc: std.mem.Allocator,
 
-    pub fn init(io: std.Io, listener: *std.Io.net.Server, alloc: std.mem.Allocator) !Connection {
+    pub fn init(
+        io: std.Io,
+        listener: *std.Io.net.Server,
+        alloc: std.mem.Allocator,
+    ) !Connection {
         const stream = try listener.accept(io);
         return .{
             .io = io,
@@ -52,7 +57,10 @@ fn readOneInbound(
     idx: usize,
 ) !void {
     const msg = try ws.readSmallMessage();
-    try s.pushMessage(io, .{ .idx = idx, .key_pressed = msg.data[0] });
+    try s.pushMessage(
+        io,
+        .{ .idx = idx, .direction = try core.dirFromKeyPress(msg.data[0]) },
+    );
 }
 
 // server > client bytes into ws.output
@@ -95,13 +103,17 @@ test "read a ws msg into the session queue" {
     };
     try readOneInbound(&s, tio, &ws, 0);
 
-    const expected = session.MessageQueue.Message{ .idx = 0, .key_pressed = 107 };
+    const expected = session.MessageQueue.Message{ .idx = 0, .direction = .down };
     const actual = try s.popMessage(tio);
 
     try t.expectEqual(expected, actual);
 }
 
-fn writeOutboundLoop(io: std.Io, ws: *std.http.Server.WebSocket, outbound: *std.Io.Queue(session.OutboundMsg)) std.Io.Cancelable!void {
+fn writeOutboundLoop(
+    io: std.Io,
+    ws: *std.http.Server.WebSocket,
+    outbound: *std.Io.Queue(session.OutboundMsg),
+) std.Io.Cancelable!void {
     while (true) {
         writeOneOutbound(io, ws, outbound) catch |err| switch (err) {
             error.Canceled => return error.Canceled,
@@ -114,7 +126,13 @@ fn writeOutboundLoop(io: std.Io, ws: *std.http.Server.WebSocket, outbound: *std.
     }
 }
 
-fn handleWs(alloc: std.mem.Allocator, io: std.Io, ws: *std.http.Server.WebSocket, sman: *session.SessionManager, s: *session.Session) !void {
+fn handleWs(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    ws: *std.http.Server.WebSocket,
+    sman: *session.SessionManager,
+    s: *session.Session,
+) !void {
     const idx = s.addPlayer(alloc, io) catch |err| {
         try ws.output.print("{}", .{err});
         try ws.output.flush();
@@ -144,7 +162,10 @@ fn handleWs(alloc: std.mem.Allocator, io: std.Io, ws: *std.http.Server.WebSocket
     return;
 }
 
-fn runConn(conn: *Connection, session_man: *session.SessionManager) std.Io.Cancelable!void {
+fn runConn(
+    conn: *Connection,
+    session_man: *session.SessionManager,
+) std.Io.Cancelable!void {
     handleConn(conn, session_man) catch |err| switch (err) {
         error.Canceled => return error.Canceled,
         else => {
@@ -175,7 +196,10 @@ fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void {
                         std.log.err("{}", .{err});
                         return;
                     };
-                    const s = try session_man.findOrCreateSession(conn.alloc, conn.io);
+                    const s = try session_man.findOrCreateSession(
+                        conn.alloc,
+                        conn.io,
+                    );
                     handleWs(conn.alloc, conn.io, &ws, session_man, s) catch |err| {
                         std.log.err("{}", .{err});
                         return;
@@ -192,9 +216,11 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     // FIXME: this prolly needs to be switch once hosted somewhere
     const addr = std.Io.net.IpAddress{ .ip4 = .loopback(8080) };
-    var listener = try std.Io.net.IpAddress.listen(&addr, io, .{
-        .reuse_address = true,
-    });
+    var listener = try std.Io.net.IpAddress.listen(
+        &addr,
+        io,
+        .{ .reuse_address = true },
+    );
     const gpa = init.gpa;
     var sman = session.SessionManager.init();
     defer sman.deinit(gpa, io);
@@ -214,7 +240,11 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-pub fn serveFile(req: *http.Server.Request, io: std.Io, alloc: std.mem.Allocator) !void {
+pub fn serveFile(
+    req: *http.Server.Request,
+    io: std.Io,
+    alloc: std.mem.Allocator,
+) !void {
     var file_path: []u8 = undefined;
     var pbuf: [256]u8 = undefined;
 
@@ -234,13 +264,19 @@ pub fn serveFile(req: *http.Server.Request, io: std.Io, alloc: std.mem.Allocator
 
     const ext = std.fs.path.extension(file_path);
     const mime = MIME_MAP.get(ext) orelse "application/octet-stream";
-    const body = std.Io.Dir.cwd().readFileAlloc(io, file_path, alloc, .limited(10 * 1024 * 1024)) catch {
+    const body = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        file_path,
+        alloc,
+        .limited(10 * 1024 * 1024),
+    ) catch {
         try req.respond("", .{ .status = .not_found });
         return;
     };
     defer alloc.free(body);
 
-    try req.respond(body, .{
-        .extra_headers = &.{.{ .name = "content-type", .value = mime }},
-    });
+    try req.respond(
+        body,
+        .{ .extra_headers = &.{.{ .name = "content-type", .value = mime }} },
+    );
 }

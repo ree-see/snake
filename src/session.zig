@@ -1,6 +1,7 @@
 const std = @import("std");
 const core = @import("core");
 const games = @import("games");
+const Bot = @import("bot");
 
 const talloc = std.testing.allocator;
 const t = std.testing;
@@ -21,7 +22,11 @@ pub const SessionManager = struct {
         return sman;
     }
 
-    pub fn deinit(self: *SessionManager, alloc: std.mem.Allocator, io: std.Io) void {
+    pub fn deinit(
+        self: *SessionManager,
+        alloc: std.mem.Allocator,
+        io: std.Io,
+    ) void {
         for (self.sessions.items) |session| {
             session.deinit(io);
             alloc.destroy(session);
@@ -42,7 +47,11 @@ pub const SessionManager = struct {
         };
     }
 
-    pub fn findOrCreateSession(self: *SessionManager, alloc: std.mem.Allocator, io: std.Io) !*Session {
+    pub fn findOrCreateSession(
+        self: *SessionManager,
+        alloc: std.mem.Allocator,
+        io: std.Io,
+    ) !*Session {
         try self.mutex.lock(io);
         defer self.mutex.unlock(io);
         for (self.sessions.items) |session| {
@@ -64,7 +73,11 @@ pub const SessionManager = struct {
     }
 
     // use if SessionManager isn't locked
-    pub fn addSession(self: *SessionManager, alloc: std.mem.Allocator, io: std.Io) !void {
+    pub fn addSession(
+        self: *SessionManager,
+        alloc: std.mem.Allocator,
+        io: std.Io,
+    ) !void {
         try self.mutex.lock(io);
         defer self.mutex.unlock(io);
         const s_ptr = try alloc.create(Session);
@@ -80,21 +93,34 @@ pub const SessionManager = struct {
     }
 
     // use if SessionManager isn't locked
-    pub fn removeSession(self: *SessionManager, alloc: std.mem.Allocator, io: std.Io, s: *Session) !void {
+    pub fn removeSession(
+        self: *SessionManager,
+        alloc: std.mem.Allocator,
+        io: std.Io,
+        s: *Session,
+    ) !void {
         try self.mutex.lock(io);
         defer self.mutex.unlock(io);
         try self.removeSessionLocked(alloc, io, s);
     }
 
     // not safe to use make sure SessionManager is locked
-    pub fn removeSessionLocked(self: *SessionManager, alloc: std.mem.Allocator, io: std.Io, s: *Session) !void {
-        if (try s.canRemove(io)) {
-            self.destroySessionLocked(alloc, io, s);
-        }
+    pub fn removeSessionLocked(
+        self: *SessionManager,
+        alloc: std.mem.Allocator,
+        io: std.Io,
+        s: *Session,
+    ) !void {
+        if (try s.canRemove(io)) self.destroySessionLocked(alloc, io, s);
     }
 
     // not safe to use make sure SessionManager is locked
-    fn destroySessionLocked(self: *SessionManager, alloc: std.mem.Allocator, io: std.Io, s: *Session) void {
+    fn destroySessionLocked(
+        self: *SessionManager,
+        alloc: std.mem.Allocator,
+        io: std.Io,
+        s: *Session,
+    ) void {
         for (self.sessions.items, 0..self.sessions.items.len) |session, i| {
             if (s == session) {
                 session.deinit(io);
@@ -143,9 +169,11 @@ pub const Session = struct {
     mutex: std.Io.Mutex,
     run_group: std.Io.Group,
     game: games.TronGame,
+
     players: std.ArrayList(*Player),
+    bots: std.ArrayList(Bot),
     queue: MessageQueue,
-    count: u64 = 0,
+
     max_players: u8 = 5,
 
     const SessionError = error{
@@ -163,6 +191,7 @@ pub const Session = struct {
             .game = .init,
             .players = .empty,
             .queue = queue,
+            .bots = .empty,
         };
     }
 
@@ -174,6 +203,7 @@ pub const Session = struct {
             self.alloc.destroy(player);
         }
         self.players.deinit(self.alloc);
+        self.bots.deinit(self.alloc);
     }
 
     pub fn canJoin(self: *Session, io: std.Io) SessionError!bool {
@@ -196,8 +226,11 @@ pub const Session = struct {
         while (true) {
             if (self.queue.pop()) |m| {
                 const s = self.game.snakes.slice();
-                const prev_dir = s.items(.direction)[m.idx];
-                s.items(.direction)[m.idx] = core.setDirection(prev_dir, m.key_pressed);
+                const curr_dir = s.items(.direction)[m.idx];
+                s.items(.direction)[m.idx] = core.setDirection(
+                    curr_dir,
+                    m.direction,
+                );
             } else break;
         }
     }
@@ -229,7 +262,11 @@ pub const Session = struct {
         return player.idx;
     }
 
-    pub fn removePlayer(self: *Session, io: std.Io, players_idx: usize) SessionError!void {
+    pub fn removePlayer(
+        self: *Session,
+        io: std.Io,
+        players_idx: usize,
+    ) SessionError!void {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
         return self.removePlayerLocked(players_idx);
@@ -262,6 +299,7 @@ pub const Session = struct {
         const dead = s.items(.is_dead);
         while (self.game.state != .over) {
             dead_count = 0;
+            // get each bots decision and enqueue them in self.queue
             try self.drain(io);
             self.game.tick(self.alloc) catch |err| {
                 std.debug.print("{}", .{err});
@@ -295,14 +333,24 @@ pub const Session = struct {
         self.broadcast(io, msg[0..], .text) catch |err| std.log.err("{}", .{err});
     }
 
-    pub fn broadcast(self: *Session, io: std.Io, msg: []const u8, op: std.http.Server.WebSocket.Opcode) !void {
+    pub fn broadcast(
+        self: *Session,
+        io: std.Io,
+        msg: []const u8,
+        op: std.http.Server.WebSocket.Opcode,
+    ) !void {
         self.mutex.lock(io) catch return;
         defer self.mutex.unlock(io);
         try self.broadcastLocked(io, msg, op);
     }
 
     // This method only just pushes a message to each players queue doesn't actually broadcasts
-    pub fn broadcastLocked(self: *Session, io: std.Io, msg: []const u8, op: std.http.Server.WebSocket.Opcode) !void {
+    pub fn broadcastLocked(
+        self: *Session,
+        io: std.Io,
+        msg: []const u8,
+        op: std.http.Server.WebSocket.Opcode,
+    ) !void {
         if (msg.len > OutboundMsg.max_frame_size) return error.MessageTooLarge;
         for (self.players.items) |player| {
             var outbound: OutboundMsg = .{
@@ -324,8 +372,14 @@ pub const Session = struct {
         self.game.state = .over;
     }
 
-    pub fn startLobby(self: *Session, alloc: std.mem.Allocator, io: std.Io, rand: std.Random, countdown: usize) !void {
-        while (!try self.isFull(io)) {
+    pub fn startLobby(
+        self: *Session,
+        alloc: std.mem.Allocator,
+        io: std.Io,
+        rand: std.Random,
+        countdown: usize,
+    ) !void {
+        while (self.players.items.len == 0) {
             std.Io.sleep(io, std.Io.Duration.fromMilliseconds(500), std.Io.Clock.awake) catch return;
         } else {
             for (1..countdown + 1) |i| {
@@ -335,7 +389,8 @@ pub const Session = struct {
                 try self.broadcast(io, msg, .text);
             }
 
-            for (self.players.items) |_| {
+            if (self.players.items.len <= self.max_players) try self.fillBots(io, self.max_players - self.players.items.len);
+            for (0..self.max_players) |_| {
                 try self.game.spawnSnake(alloc, rand);
             }
             self.game.state = .running;
@@ -349,6 +404,18 @@ pub const Session = struct {
 
         try self.startLobby(alloc, io, rand, 20);
         try self.startGame(io);
+    }
+
+    pub fn fillBots(self: *Session, io: std.Io, n_bots: usize) SessionError!void {
+        self.mutex.lock(io) catch return SessionError.LockedMutex;
+        defer self.mutex.unlock(io);
+        try self.fillBotsLocked(n_bots);
+    }
+
+    pub fn fillBotsLocked(self: *Session, n_bots: usize) !void {
+        for (self.players.items.len..n_bots + self.players.items.len) |i| {
+            self.bots.append(self.alloc, .{ .snake_idx = i }) catch @panic("OOM error");
+        }
     }
 
     pub fn pushMessage(self: *Session, io: std.Io, msg: MessageQueue.Message) SessionError!void {
@@ -381,6 +448,17 @@ pub const Session = struct {
             if (player.status == .connected) return false;
         }
         return true;
+    }
+
+    pub fn enqueueBotDecisions(self: *Session, io: std.Io) !void {
+        for (self.bots.items) |*bot| {
+            const dir = bot.decide(&self.game) orelse continue;
+            const msg: MessageQueue.Message = .{
+                .idx = bot.snake_idx,
+                .direction = dir,
+            };
+            try self.pushMessage(io, msg);
+        }
     }
 };
 
@@ -446,6 +524,48 @@ pub const Player = struct {
     };
 };
 
+test "lobby fills remaining slots with bots" {
+    var s = try Session.init(talloc);
+    defer s.deinit(tio);
+
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    _ = try s.addPlayer(talloc, tio);
+
+    try s.startLobby(talloc, tio, rand, 1);
+
+    try t.expectEqual(5, s.game.snakes.len);
+    try t.expectEqual(1, s.players.items.len);
+    try t.expectEqual(4, s.bots.items.len);
+    try t.expectEqual(0, s.players.items[0].idx);
+    for (0..s.bots.items.len) |i| {
+        try t.expectEqual(i + 1, s.bots.items[i].snake_idx);
+    }
+}
+
+test "session able to fill inputs from bots" {
+    var s = try Session.init(talloc);
+    defer s.deinit(tio);
+
+    const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    _ = try s.addPlayer(talloc, tio);
+    try s.startLobby(talloc, tio, rand, 1);
+
+    try s.enqueueBotDecisions(tio);
+
+    try t.expectEqual(4, s.queue.len());
+
+    for (0..s.bots.items.len) |i| {
+        const bot_msg = try s.popMessage(tio);
+        try t.expectEqual(i + 1, bot_msg.?.idx);
+    }
+}
+
 test "boardcast drops the oldest frame for a full player queue" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
@@ -470,7 +590,7 @@ pub const MessageQueue = struct {
 
     pub const Message = struct {
         idx: usize,
-        key_pressed: u8,
+        direction: core.Snake.Direction,
     };
 
     pub fn init(alloc: std.mem.Allocator, capacity: usize) MessageQueue {
@@ -515,16 +635,16 @@ test "drain changes the direction of snakes" {
 
     const snakes = s.game.snakes.slice();
     const dirs = snakes.items(.direction);
-    const prev_dirs2 = dirs[2];
-    const prev_dirs1 = dirs[1];
-    const prev_dirs4 = dirs[4];
-    dirs[2] = core.setDirection(prev_dirs2, 106);
-    dirs[1] = core.setDirection(prev_dirs1, 105);
-    dirs[4] = core.setDirection(prev_dirs4, 106);
+    const curr_dirs2 = dirs[2];
+    const curr_dirs1 = dirs[1];
+    const curr_dirs4 = dirs[4];
+    dirs[2] = core.setDirection(curr_dirs2, .left);
+    dirs[1] = core.setDirection(curr_dirs1, .up);
+    dirs[4] = core.setDirection(curr_dirs4, .left);
 
-    try s.queue.push(talloc, .{ .idx = 2, .key_pressed = 107 });
-    try s.queue.push(talloc, .{ .idx = 1, .key_pressed = 106 });
-    try s.queue.push(talloc, .{ .idx = 4, .key_pressed = 107 });
+    try s.queue.push(talloc, .{ .idx = 2, .direction = .down });
+    try s.queue.push(talloc, .{ .idx = 1, .direction = .left });
+    try s.queue.push(talloc, .{ .idx = 4, .direction = .down });
     try s.drain(tio);
 
     try t.expectEqual(.down, snakes.items(.direction)[2]);
@@ -536,9 +656,9 @@ test "pop message off of queue" {
     var queue = MessageQueue.init(talloc, 8);
     defer queue.deinit(talloc);
 
-    try queue.push(talloc, .{ .idx = 2, .key_pressed = 107 });
-    try queue.push(talloc, .{ .idx = 1, .key_pressed = 107 });
-    try queue.push(talloc, .{ .idx = 4, .key_pressed = 108 });
+    try queue.push(talloc, .{ .idx = 2, .direction = .down });
+    try queue.push(talloc, .{ .idx = 1, .direction = .down });
+    try queue.push(talloc, .{ .idx = 4, .direction = .right });
 
     try t.expectEqual(2, queue.pop().?.idx);
 }
@@ -547,9 +667,9 @@ test "push message to queue" {
     var queue = MessageQueue.init(talloc, 8);
     defer queue.deinit(talloc);
 
-    try queue.push(talloc, .{ .idx = 2, .key_pressed = 107 }); // 1
-    try queue.push(talloc, .{ .idx = 1, .key_pressed = 107 }); // 2
-    try queue.push(talloc, .{ .idx = 4, .key_pressed = 108 }); // 3
+    try queue.push(talloc, .{ .idx = 2, .direction = .down }); // 1
+    try queue.push(talloc, .{ .idx = 1, .direction = .down }); // 2
+    try queue.push(talloc, .{ .idx = 4, .direction = .right }); // 3
 
     try t.expectEqual(3, queue.len());
 }
@@ -567,9 +687,9 @@ test "drain messages in queue" {
     try s.game.spawnSnake(talloc, rand);
     try s.game.spawnSnake(talloc, rand);
 
-    try s.queue.push(talloc, .{ .idx = 2, .key_pressed = 107 });
-    try s.queue.push(talloc, .{ .idx = 1, .key_pressed = 107 });
-    try s.queue.push(talloc, .{ .idx = 4, .key_pressed = 108 });
+    try s.queue.push(talloc, .{ .idx = 2, .direction = .down });
+    try s.queue.push(talloc, .{ .idx = 1, .direction = .down });
+    try s.queue.push(talloc, .{ .idx = 4, .direction = .right });
     try s.drain(tio);
 
     try t.expectEqual(0, s.queue.len());

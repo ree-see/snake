@@ -2,36 +2,49 @@ const std = @import("std");
 const core = @import("core");
 const games = @import("games");
 
-var game: games.TronGame = undefined;
+var game: games.ClassicGame = undefined;
+var initialized = false;
+var prng: std.Random.DefaultPrng = undefined;
 
-export fn init() void {
+export fn init(seed: u64) void {
     const walloc = std.heap.wasm_allocator;
-    game = games.TronGame.init(walloc, games.Spawn.init()) catch @panic("OOM error");
+    if (initialized) game.deinit(walloc);
+
+    prng = std.Random.DefaultPrng.init(seed);
+    game = games.ClassicGame.init(walloc, prng.random()) catch @panic("OOM error");
+    initialized = true;
 }
 
-export fn tick() void {
+export fn tick() u8 {
     const walloc = std.heap.wasm_allocator;
-    game.tick(walloc) catch @panic("OOM error");
+    game.tick(walloc, prng.random()) catch @panic("OOM error");
+    return @intFromEnum(game.state);
 }
 
-export fn setDirection(idx: usize, key_press: u8) void {
-    const s = game.snakes.slice();
-    const dirs = s.items(.direction);
-    const prev_dir = dirs[idx];
-    dirs[idx] = core.setDirection(prev_dir, key_press);
+export fn setDirection(key_press: u8) void {
+    const curr_dir = game.snake.direction;
+    const new_dir = core.dirFromKeyPress(key_press) catch return;
+    game.snake.direction = core.setDirection(curr_dir, new_dir);
 }
 
-export fn getSnakeLength(idx: usize) usize {
-    const s = game.snakes.slice();
-    const bodies = s.items(.body);
-    return bodies[idx].items.len;
+export fn getSnakeLength() usize {
+    return game.snake.len();
 }
 
-export fn getSnakePtr(idx: usize) usize {
-    const s = game.snakes.slice();
-    const bodies = s.items(.body);
+export fn getSnakePtr() usize {
+    return @intFromPtr(game.snake.body.items.ptr);
+}
 
-    return @intFromPtr(bodies[idx].items.ptr);
+export fn getScore() u8 {
+    return game.score;
+}
+
+export fn getFoodPosX() u8 {
+    return game.food.pos.x;
+}
+
+export fn getFoodPosY() u8 {
+    return game.food.pos.y;
 }
 
 export fn getGameState() u8 {

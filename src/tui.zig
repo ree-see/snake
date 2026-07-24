@@ -31,7 +31,11 @@ const Grid = struct {
     }
 };
 
-pub fn render(grid: *Grid, game: *games.ClassicGame, writer: *std.Io.File.Writer) !void {
+pub fn render(
+    grid: *Grid,
+    game: *games.ClassicGame,
+    writer: *std.Io.File.Writer,
+) !void {
     const stdout = &writer.interface;
     const ws = termSize();
     const total_w = core.GRID_WIDTH + 2; // + 2 for left/right borders
@@ -136,7 +140,7 @@ pub fn main(init: std.process.Init) !void {
         if (n > 0) {
             if (buf[0] == '\x1b') break;
             const prev_dir = game.snake.direction;
-            game.snake.direction = core.setDirection(prev_dir, buf[0]);
+            game.snake.direction = core.setDirection(prev_dir, try core.dirFromKeyPress(buf[0]));
         }
         try game.tick(gpa, rand);
         try render(&grid, &game, &stdout_writer);

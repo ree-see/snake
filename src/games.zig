@@ -17,7 +17,10 @@ const Food = struct {
 
     pub fn new(rand: std.Random) Food {
         return Food{
-            .pos = .{ .x = rand.intRangeLessThan(u8, 0, core.GRID_WIDTH - 1), .y = rand.intRangeLessThan(u8, 0, core.GRID_HEIGHT - 1) },
+            .pos = .{
+                .x = rand.intRangeLessThan(u8, 0, core.GRID_WIDTH - 1),
+                .y = rand.intRangeLessThan(u8, 0, core.GRID_HEIGHT - 1),
+            },
         };
     }
 };
@@ -61,7 +64,7 @@ pub const TronGame = struct {
         self.deltas.deinit(alloc);
     }
 
-    pub fn isPosAvailable(self: *TronGame, pos: core.Position) bool {
+    pub fn isPosAvailable(self: *const TronGame, pos: core.Position) bool {
         const s = self.snakes.slice();
         const bodies = s.items(.body);
         for (bodies) |snakes_body| {
@@ -70,14 +73,21 @@ pub const TronGame = struct {
         return true;
     }
 
-    pub fn spawnSnake(self: *TronGame, alloc: std.mem.Allocator, rand: std.Random) !void {
+    pub fn spawnSnake(
+        self: *TronGame,
+        alloc: std.mem.Allocator,
+        rand: std.Random,
+    ) !void {
         var spawn = try Spawn.new(rand);
 
         while (!self.isPosAvailable(spawn.pos)) {
             spawn = try Spawn.new(rand);
         }
 
-        try self.snakes.append(alloc, try core.Snake.initAt(alloc, spawn.pos, spawn.direction));
+        try self.snakes.append(
+            alloc,
+            try core.Snake.initAt(alloc, spawn.pos, spawn.direction),
+        );
     }
 
     pub fn encodeDeltas(self: *const TronGame, buf: []u8) []u8 {
@@ -130,10 +140,16 @@ pub const TronGame = struct {
                 if (!std.meta.eql(a, b)) continue;
 
                 if (kills[i] >= kills[j]) {
-                    positions[j].death = .{ .died = @intCast(j), .killer = @intCast(i) };
+                    positions[j].death = .{
+                        .died = @intCast(j),
+                        .killer = @intCast(i),
+                    };
                     dead[j] = true;
                 } else {
-                    positions[i].death = .{ .died = @intCast(i), .killer = @intCast(j) };
+                    positions[i].death = .{
+                        .died = @intCast(i),
+                        .killer = @intCast(j),
+                    };
                     dead[i] = true;
                 }
             }
@@ -152,7 +168,10 @@ pub const TronGame = struct {
             for (0..self.snakes.len) |j| {
                 if (i == j) continue;
                 if (core.bodyContains(body[j].items, target)) {
-                    self.deltas.items[i].death = .{ .died = @intCast(i), .killer = @intCast(j) };
+                    self.deltas.items[i].death = .{
+                        .died = @intCast(i),
+                        .killer = @intCast(j),
+                    };
                     dead[i] = true;
                     break;
                 }
@@ -170,12 +189,18 @@ pub const TronGame = struct {
         for (0..self.snakes.len) |i| {
             if (dead[i]) continue;
             const target = self.deltas.items[i].nextPos orelse {
-                self.deltas.items[i].death = .{ .died = @intCast(i), .killer = null };
+                self.deltas.items[i].death = .{
+                    .died = @intCast(i),
+                    .killer = null,
+                };
                 dead[i] = true;
                 continue;
             };
             if (core.bodyContains(body[i].items, target)) {
-                self.deltas.items[i].death = .{ .died = @intCast(i), .killer = null };
+                self.deltas.items[i].death = .{
+                    .died = @intCast(i),
+                    .killer = null,
+                };
                 dead[i] = true;
             }
         }
@@ -265,7 +290,10 @@ test "wall collision test" {
     var game = TronGame.init;
     defer game.deinit(talloc);
 
-    try game.snakes.append(talloc, try core.Snake.initAt(talloc, .{ .x = 0, .y = 0 }, .down));
+    try game.snakes.append(
+        talloc,
+        try core.Snake.initAt(talloc, .{ .x = 0, .y = 0 }, .down),
+    );
     game.snakes.items(.direction)[0] = .left; // next() is null off the left edge
     try game.resetDelta(talloc);
     game.checkSelfCollision();
@@ -280,7 +308,10 @@ test "self collision test" {
     defer game.deinit(talloc);
 
     // A 2x2 loop: head at {10,10} moving right lands on the tail at {11,10}.
-    try game.snakes.append(talloc, try core.Snake.initAt(talloc, .{ .x = 0, .y = 0 }, .right));
+    try game.snakes.append(
+        talloc,
+        try core.Snake.initAt(talloc, .{ .x = 0, .y = 0 }, .right),
+    );
     const body = &game.snakes.items(.body)[0];
     body.clearRetainingCapacity();
     try body.append(talloc, .{ .x = 10, .y = 10 }); // head
@@ -300,8 +331,14 @@ test "tick test" {
     var game = TronGame.init;
     defer game.deinit(talloc);
 
-    try game.snakes.append(talloc, try core.Snake.initAt(talloc, .{ .x = 0, .y = 0 }, .down));
-    try game.snakes.append(talloc, try core.Snake.initAt(talloc, .{ .x = 10, .y = 10 }, .down));
+    try game.snakes.append(
+        talloc,
+        try core.Snake.initAt(talloc, .{ .x = 0, .y = 0 }, .down),
+    );
+    try game.snakes.append(
+        talloc,
+        try core.Snake.initAt(talloc, .{ .x = 10, .y = 10 }, .down),
+    );
 
     try game.tick(talloc);
 
@@ -426,10 +463,22 @@ test "encodeDeltas packs every snake's delta into one flat byte buffer" {
     defer game.deinit(talloc);
 
     try game.deltas.append(talloc, .{ .death = .{ .died = 0, .killer = 1 }, .nextPos = .{ .x = 1, .y = 2 } });
-    try game.deltas.append(talloc, .{ .death = null, .nextPos = .{ .x = 5, .y = 6 } });
-    try game.deltas.append(talloc, .{ .death = .{ .died = 2, .killer = null }, .nextPos = null });
+    try game.deltas.append(
+        talloc,
+        .{ .death = null, .nextPos = .{ .x = 5, .y = 6 } },
+    );
+    try game.deltas.append(
+        talloc,
+        .{ .death = .{ .died = 2, .killer = null }, .nextPos = null },
+    );
     try game.deltas.append(talloc, .{ .death = null, .nextPos = null });
-    try game.deltas.append(talloc, .{ .death = .{ .died = 4, .killer = 0 }, .nextPos = .{ .x = 10, .y = 20 } });
+    try game.deltas.append(
+        talloc,
+        .{
+            .death = .{ .died = 4, .killer = 0 },
+            .nextPos = .{ .x = 10, .y = 20 },
+        },
+    );
 
     var buf: [20]u8 = undefined;
     _ = game.encodeDeltas(&buf);
@@ -520,10 +569,7 @@ pub const Delta = struct {
 
     test "encode Delta" {
         const delta = Delta{
-            .death = .{
-                .died = 1,
-                .killer = 4,
-            },
+            .death = .{ .died = 1, .killer = 4 },
             .nextPos = .{ .x = 3, .y = 5 },
         };
         const expected: [4]u8 = .{ 0x07, 4, 3, 5 };
@@ -544,7 +590,12 @@ pub const ClassicGame = struct {
         const state: GameState = .running;
         const food = Food.new(rand);
 
-        return .{ .score = 0, .snake = snake, .food = food, .state = state };
+        return .{
+            .score = 0,
+            .snake = snake,
+            .food = food,
+            .state = state,
+        };
     }
 
     pub fn deinit(self: *ClassicGame, alloc: std.mem.Allocator) void {
@@ -563,7 +614,11 @@ pub const ClassicGame = struct {
         return new_food;
     }
 
-    pub fn tick(self: *ClassicGame, alloc: std.mem.Allocator, rand: std.Random) !void {
+    pub fn tick(
+        self: *ClassicGame,
+        alloc: std.mem.Allocator,
+        rand: std.Random,
+    ) !void {
         if (core.nextPos(self.snake.direction, self.snake.body.items[0])) |next_pos| {
             if (core.bodyContains(self.snake.body.items, next_pos)) {
                 self.state = .over;
@@ -666,7 +721,7 @@ test "classic game spawns food free from snakes body" {
 
     for (0..core.GRID_WIDTH / 3) |x| {
         for (1..core.GRID_HEIGHT - 1) |y| {
-            const pos = core.Position{ .x = @intCast(x), .y = @intCast(y) };
+            const pos: core.Position = .{ .x = @intCast(x), .y = @intCast(y) };
             try game.snake.body.append(alloc, pos);
         }
     }

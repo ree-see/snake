@@ -4,20 +4,55 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const core_mod = b.createModule(.{ .root_source_file = b.path("src/core.zig"), .target = target, .optimize = optimize });
-    const games_mod = b.createModule(.{ .root_source_file = b.path("src/games.zig"), .target = target, .optimize = optimize });
+    const core_mod = b.createModule(
+        .{
+            .root_source_file = b.path("src/core.zig"),
+            .target = target,
+            .optimize = optimize,
+        },
+    );
+    const games_mod = b.createModule(
+        .{
+            .root_source_file = b.path("src/games.zig"),
+            .target = target,
+            .optimize = optimize,
+        },
+    );
     games_mod.addImport("core", core_mod);
 
-    const session_mod = b.createModule(.{ .root_source_file = b.path("src/session.zig"), .target = target, .optimize = optimize });
+    const bot_mod = b.createModule(
+        .{
+            .root_source_file = b.path("src/Bot.zig"),
+            .target = target,
+            .optimize = optimize,
+        },
+    );
+    bot_mod.addImport("core", core_mod);
+    bot_mod.addImport("games", games_mod);
+
+    const session_mod = b.createModule(
+        .{
+            .root_source_file = b.path("src/session.zig"),
+            .target = target,
+            .optimize = optimize,
+        },
+    );
     session_mod.addImport("core", core_mod);
     session_mod.addImport("games", games_mod);
+    session_mod.addImport("bot", bot_mod);
 
-    const server = b.addExecutable(.{ .name = "game-server", .root_module = b.createModule(.{
-        .root_source_file = b.path("src/server.zig"),
-        .target = target,
-        .optimize = optimize,
-    }) });
+    const server = b.addExecutable(
+        .{
+            .name = "game-server",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/server.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        },
+    );
     server.root_module.addImport("session", session_mod);
+    server.root_module.addImport("core", core_mod);
 
     b.installArtifact(server);
 
@@ -78,6 +113,7 @@ pub fn build(b: *std.Build) void {
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
     const core_tests = b.addTest(.{ .root_module = core_mod });
+    const bot_tests = b.addTest(.{ .root_module = bot_mod });
     const session_tests = b.addTest(.{ .root_module = session_mod });
     const server_tests = b.addTest(.{
         .root_module = server.root_module,
@@ -85,12 +121,14 @@ pub fn build(b: *std.Build) void {
     const games_tests = b.addTest(.{ .root_module = games_mod });
     const run_server_tests = b.addRunArtifact(server_tests);
     const run_core_tests = b.addRunArtifact(core_tests);
+    const run_bot_tests = b.addRunArtifact(bot_tests);
     const run_session_tests = b.addRunArtifact(session_tests);
     const run_games_tests = b.addRunArtifact(games_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_core_tests.step);
+    test_step.dependOn(&run_bot_tests.step);
     test_step.dependOn(&run_session_tests.step);
     test_step.dependOn(&run_server_tests.step);
     test_step.dependOn(&run_games_tests.step);
