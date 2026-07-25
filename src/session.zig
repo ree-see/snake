@@ -8,6 +8,97 @@ const talloc = std.testing.allocator;
 const t = std.testing;
 const tio = std.testing.io;
 
+/// Bounded, owned WebSocket frame data queued for one client.
+///
+/// When a client queue is full, sessions discard its oldest frame to retain recency.
+pub const OutboundMsg = struct {
+    data: [max_frame_size]u8,
+    len: usize,
+    op: std.http.Server.WebSocket.Opcode,
+
+    const max_frame_size: usize = 256;
+
+    const MsgType = enum { init };
+
+    const InitMessage = struct {
+        kind: MsgType,
+        snake_idx: usize,
+        snakes: []games.SnakeSnapshot,
+    };
+
+    const initMsg: OutboundMsg = .{
+        .data = undefined,
+        .len = 0,
+        .op = .text,
+    };
+};
+
+/// One connected human endpoint and the snake it controls in a session.
+pub const Client = struct {
+    snake_idx: usize,
+    outbound_buf: [10]OutboundMsg,
+    outbound: std.Io.Queue(OutboundMsg),
+    status: Status,
+
+    const Status = enum {
+        connected,
+        disconnected,
+        dead,
+    };
+
+    const init: Client = .{
+        .snake_idx = undefined,
+        .outbound_buf = undefined,
+        .outbound = undefined,
+        .status = .connected,
+    };
+};
+
+/// FIFO collection of client direction inputs consumed by the session tick loop.
+pub const MessageQueue = struct {
+    queue: std.Deque(Message),
+
+    /// A requested direction for the snake identified by `idx`.
+    pub const Message = struct {
+        idx: usize,
+        direction: core.Snake.Direction,
+    };
+
+    /// Allocates queue storage for up to `capacity` pending inputs.
+    pub fn init(alloc: std.mem.Allocator, capacity: usize) MessageQueue {
+        const queue = std.Deque(Message).initCapacity(alloc, capacity) catch unreachable;
+        return .{ .queue = queue };
+    }
+
+    /// Releases queue storage using the allocator supplied to init.
+    pub fn deinit(self: *MessageQueue, alloc: std.mem.Allocator) void {
+        self.queue.deinit(alloc);
+    }
+
+    /// Appends an input to the queue without session synchronization.
+    ///
+    /// Use `Session.pushMessage` when concurrent clients can write.
+    pub fn push(
+        self: *MessageQueue,
+        alloc: std.mem.Allocator,
+        message: Message,
+    ) !void {
+        try self.queue.pushBack(alloc, message);
+    }
+
+    /// Removes the oldest input without session synchronization.
+    ///
+    /// Use `Session.popMessage` when concurrent clients can write.
+    pub fn pop(self: *MessageQueue) ?Message {
+        return self.queue.popFront();
+    }
+
+    /// Returns the number of pending inputs.
+    pub fn len(self: *MessageQueue) usize {
+        return self.queue.len;
+    }
+};
+
 /// Owns all active sessions and assigns joining clients to open lobbies.
 ///
 /// Its mutex protects the session list. Individual sessions use separate mutexes.
@@ -139,38 +230,6 @@ pub const SessionManager = struct {
         }
     }
 };
-
-test "able to find sessions lobby that's not full" {
-    var sman = SessionManager.init();
-    defer sman.deinit(talloc, tio);
-
-    const a_ptr = try talloc.create(Session);
-    a_ptr.* = try Session.init(talloc);
-    try sman.sessions.append(talloc, a_ptr);
-    const open_session = sman.findOrCreateSession(talloc, tio);
-
-    try t.expectEqual(a_ptr, open_session);
-}
-
-test "add new session" {
-    var sman = SessionManager.init();
-    defer sman.deinit(talloc, tio);
-
-    try sman.addSession(talloc, tio);
-
-    try t.expectEqual(sman.sessions.items.len, 1);
-}
-
-test "remove new session" {
-    var sman = SessionManager.init();
-    defer sman.deinit(talloc, tio);
-
-    try sman.addSession(talloc, tio);
-    const s = sman.sessions.items[0];
-    sman.destroySessionLocked(talloc, tio, s);
-
-    try t.expectEqual(sman.sessions.items.len, 0);
-}
 
 /// Owns one Tron match, its connected clients, bots, and synchronized input queue.
 pub const Session = struct {
@@ -483,7 +542,11 @@ pub const Session = struct {
     }
 
     /// Enqueues a client direction input while synchronizing access.
-    pub fn pushMessage(self: *Session, io: std.Io, msg: MessageQueue.Message) SessionError!void {
+    pub fn pushMessage(
+        self: *Session,
+        io: std.Io,
+        msg: MessageQueue.Message,
+    ) SessionError!void {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
         self.queue.push(self.alloc, msg) catch @panic("OOM error");
@@ -531,31 +594,6 @@ pub const Session = struct {
     }
 };
 
-/// Bounded, owned WebSocket frame data queued for one client.
-///
-/// When a client queue is full, sessions discard its oldest frame to retain recency.
-pub const OutboundMsg = struct {
-    data: [max_frame_size]u8,
-    len: usize,
-    op: std.http.Server.WebSocket.Opcode,
-
-    const max_frame_size: usize = 256;
-
-    const MsgType = enum { init };
-
-    const InitMessage = struct {
-        kind: MsgType,
-        snake_idx: usize,
-        snakes: []games.SnakeSnapshot,
-    };
-
-    const initMsg: OutboundMsg = .{
-        .data = undefined,
-        .len = 0,
-        .op = .text,
-    };
-};
-
 test "enqueue a msg for a client in a sesison" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
@@ -579,7 +617,8 @@ test "two msg FIFO test" {
 
     _ = try s.addClient(talloc, tio);
 
-    try s.broadcast(tio, "{{ \"countdown\": 2 }}", .text); // first in should be first out
+    // first in should be first out
+    try s.broadcast(tio, "{{ \"countdown\": 2 }}", .text);
     try s.broadcast(tio, "{{ \"countdown\": 1 }}", .text);
 
     const first = try s.clients.items[0].outbound.getOne(tio);
@@ -589,27 +628,6 @@ test "two msg FIFO test" {
     try t.expectEqualStrings(first_expected, first.data[0..first.len]);
     try t.expectEqualStrings(second_expected, second.data[0..second.len]);
 }
-
-/// One connected human endpoint and the snake it controls in a session.
-pub const Client = struct {
-    snake_idx: usize,
-    outbound_buf: [10]OutboundMsg,
-    outbound: std.Io.Queue(OutboundMsg),
-    status: Status,
-
-    const Status = enum {
-        connected,
-        disconnected,
-        dead,
-    };
-
-    const init: Client = .{
-        .snake_idx = undefined,
-        .outbound_buf = undefined,
-        .outbound = undefined,
-        .status = .connected,
-    };
-};
 
 test "lobby fills remaining slots with bots" {
     var s = try Session.init(talloc);
@@ -670,48 +688,6 @@ test "boardcast drops the oldest frame for a full client queue" {
     const first = try client.outbound.getOne(tio);
     try t.expectEqualStrings("1", first.data[0..first.len]);
 }
-
-// message queue that collects the message from clients that is owned
-/// FIFO collection of client direction inputs consumed by the session tick loop.
-pub const MessageQueue = struct {
-    queue: std.Deque(Message),
-
-    /// A requested direction for the snake identified by `idx`.
-    pub const Message = struct {
-        idx: usize,
-        direction: core.Snake.Direction,
-    };
-
-    /// Allocates queue storage for up to `capacity` pending inputs.
-    pub fn init(alloc: std.mem.Allocator, capacity: usize) MessageQueue {
-        const queue = std.Deque(Message).initCapacity(alloc, capacity) catch unreachable;
-        return .{ .queue = queue };
-    }
-
-    /// Releases queue storage using the allocator supplied to init.
-    pub fn deinit(self: *MessageQueue, alloc: std.mem.Allocator) void {
-        self.queue.deinit(alloc);
-    }
-
-    /// Appends an input to the queue without session synchronization.
-    ///
-    /// Use `Session.pushMessage` when concurrent clients can write.
-    pub fn push(self: *MessageQueue, alloc: std.mem.Allocator, message: Message) !void {
-        try self.queue.pushBack(alloc, message);
-    }
-
-    /// Removes the oldest input without session synchronization.
-    ///
-    /// Use `Session.popMessage` when concurrent clients can write.
-    pub fn pop(self: *MessageQueue) ?Message {
-        return self.queue.popFront();
-    }
-
-    /// Returns the number of pending inputs.
-    pub fn len(self: *MessageQueue) usize {
-        return self.queue.len;
-    }
-};
 
 test "drain changes the direction of snakes" {
     var s = try Session.init(talloc);
@@ -841,7 +817,10 @@ test "remove client and replace idx with null" {
     const client_idx = try s.addClient(talloc, tio);
     try s.removeClient(tio, client_idx);
 
-    try t.expectEqual(Client.Status.disconnected, s.clients.items[client_idx].status);
+    try t.expectEqual(
+        Client.Status.disconnected,
+        s.clients.items[client_idx].status,
+    );
 }
 
 test "initialization is personalized delivery, not a broadcast" {
@@ -852,10 +831,13 @@ test "initialization is personalized delivery, not a broadcast" {
 
     const snake_idx = try s.addClient(talloc, tio);
     try s.startLobby(talloc, tio, rand, 0);
-    // x = 107, y = 2
 
     var received: [1]OutboundMsg = undefined;
-    const queued_frame = try s.clients.items[snake_idx].outbound.get(tio, &received, 0);
+    const queued_frame = try s.clients.items[snake_idx].outbound.get(
+        tio,
+        &received,
+        0,
+    );
     try t.expect(queued_frame == 1);
     const init_msg = received[0];
     const data = init_msg.data[0..init_msg.len];
@@ -881,4 +863,35 @@ test "initialization is personalized delivery, not a broadcast" {
     }
 
     try t.expectEqual(std.http.Server.WebSocket.Opcode.text, init_msg.op);
+}
+
+test "finds a lobby that is not full" {
+    var manager = SessionManager.init();
+    defer manager.deinit(talloc, tio);
+
+    const session_ptr = try talloc.create(Session);
+    session_ptr.* = try Session.init(talloc);
+    try manager.sessions.append(talloc, session_ptr);
+
+    const open_session = try manager.findOrCreateSession(talloc, tio);
+    try t.expectEqual(session_ptr, open_session);
+}
+
+test "adds a session" {
+    var manager = SessionManager.init();
+    defer manager.deinit(talloc, tio);
+
+    try manager.addSession(talloc, tio);
+    try t.expectEqual(1, manager.sessions.items.len);
+}
+
+test "removes an empty session" {
+    var manager = SessionManager.init();
+    defer manager.deinit(talloc, tio);
+
+    try manager.addSession(talloc, tio);
+    const session_ptr = manager.sessions.items[0];
+    manager.destroySessionLocked(talloc, tio, session_ptr);
+
+    try t.expectEqual(0, manager.sessions.items.len);
 }

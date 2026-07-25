@@ -20,10 +20,13 @@ pub const SnakeSnapshot = struct {
     ) ![]SnakeSnapshot {
         const s = game.snakes.slice();
         const bodies = s.items(.body);
+
         var buf: std.ArrayList(SnakeSnapshot) = .empty;
         errdefer buf.deinit(alloc);
+
         for (bodies, 0..) |body, i| {
             std.debug.assert(body.items.len == 1);
+
             const snake: SnakeSnapshot = .{
                 .idx = i,
                 .x = body.items[0].x,
@@ -75,6 +78,65 @@ pub const Spawn = struct {
             },
             .direction = dir,
         };
+    }
+};
+
+/// Per-snake outcome for one Tron tick.
+pub const Delta = struct {
+    death: ?TronGame.DeathResult,
+    nextPos: ?core.Position,
+
+    const init: Delta = .{ .death = null, .nextPos = null };
+
+    /// Fixed byte width of the binary delta wire format.
+    pub const encoded_len: usize = 4;
+    const Header = packed struct {
+        has_death: bool,
+        has_killer: bool,
+        has_pos: bool,
+        _: u5 = 0,
+    };
+
+    /// Encodes flags, killer index, and optional next-head position into four bytes.
+    ///
+    /// The dead snake index is implied by the delta's position in the frame.
+    pub fn encode(d: Delta) [4]u8 {
+        var payload: [4]u8 = undefined;
+        var header: Header = .{
+            .has_death = true,
+            .has_killer = true,
+            .has_pos = true,
+        };
+
+        if (d.death != null) {
+            header.has_killer = if (d.death.?.killer != null) true else false;
+        } else {
+            header.has_death = false;
+            header.has_killer = false;
+        }
+        header.has_pos = if (d.nextPos != null) true else false;
+
+        for (0..4) |i| {
+            switch (i) {
+                0 => payload[i] = @bitCast(header),
+                1 => payload[i] = if (header.has_killer) d.death.?.killer.? else 0,
+                2 => payload[i] = if (header.has_pos) d.nextPos.?.x else 0,
+                3 => payload[i] = if (header.has_pos) d.nextPos.?.y else 0,
+                else => {},
+            }
+        }
+        return payload;
+    }
+
+    test "encode Delta" {
+        const delta = Delta{
+            .death = .{ .died = 1, .killer = 4 },
+            .nextPos = .{ .x = 3, .y = 5 },
+        };
+        const expected: [4]u8 = .{ 0x07, 4, 3, 5 };
+
+        const encoded_delta = delta.encode();
+        try t.expectEqual(expected, encoded_delta);
     }
 };
 
@@ -152,15 +214,17 @@ pub const TronGame = struct {
         const dead = s.items(.is_dead);
         const dir = s.items(.direction);
         const body = s.items(.body);
-
         var delta: Delta = .init;
+
         for (dead, 0..) |is_dead, i| {
             if (is_dead) {
                 try self.deltas.append(alloc, delta);
                 continue;
             }
+
             const next_pos = core.nextPos(dir[i], body[i].items[0]);
             delta.nextPos = next_pos;
+
             try self.deltas.append(alloc, delta);
         }
     }
@@ -174,7 +238,9 @@ pub const TronGame = struct {
 
         for (positions, 0..) |maybe_a, i| {
             if (i == self.snakes.len - 1) break;
+
             const a = maybe_a.nextPos orelse continue;
+
             var j = i + 1;
             while (j < self.snakes.len) : (j += 1) {
                 const b = positions[j].nextPos orelse continue;
@@ -205,14 +271,17 @@ pub const TronGame = struct {
 
         for (0..self.snakes.len) |i| {
             if (dead[i]) continue;
+
             const target = self.deltas.items[i].nextPos orelse continue;
             for (0..self.snakes.len) |j| {
                 if (i == j) continue;
+
                 if (core.bodyContains(body[j].items, target)) {
                     self.deltas.items[i].death = .{
                         .died = @intCast(i),
                         .killer = @intCast(j),
                     };
+
                     dead[i] = true;
                     break;
                 }
@@ -228,6 +297,7 @@ pub const TronGame = struct {
 
         for (0..self.snakes.len) |i| {
             if (dead[i]) continue;
+
             const target = self.deltas.items[i].nextPos orelse {
                 self.deltas.items[i].death = .{
                     .died = @intCast(i),
@@ -236,11 +306,13 @@ pub const TronGame = struct {
                 dead[i] = true;
                 continue;
             };
+
             if (core.bodyContains(body[i].items, target)) {
                 self.deltas.items[i].death = .{
                     .died = @intCast(i),
                     .killer = null,
                 };
+
                 dead[i] = true;
             }
         }
@@ -255,6 +327,7 @@ pub const TronGame = struct {
 
         for (self.deltas.items) |maybe_death| {
             const death = maybe_death.death orelse continue;
+
             dead[death.died] = true; // update snake status
             body[death.died].clearRetainingCapacity(); // snake body struct is still allocated just len 0
             if (death.killer) |killer| kills[killer] += 1; // grant kill to killer
@@ -278,6 +351,7 @@ pub const TronGame = struct {
                 try body[i].insert(alloc, 0, target);
             }
         }
+
         if (dead_count == self.snakes.len - 1 or dead_count == self.snakes.len) self.state = .over;
     }
 
@@ -295,6 +369,71 @@ pub const TronGame = struct {
         self.checkSelfCollision();
         self.applyDeaths();
         try self.advanceSnakes(alloc);
+    }
+};
+
+/// Single-player Snake state with food, scoring, and tail removal.
+pub const ClassicGame = struct {
+    score: u8,
+    state: GameState,
+    snake: core.Snake,
+    food: Food,
+
+    /// Creates a running Classic game with a centered snake and random food.
+    pub fn init(alloc: std.mem.Allocator, rand: std.Random) !ClassicGame {
+        const snake = try core.Snake.init(alloc);
+        const state: GameState = .running;
+        const food = Food.new(rand);
+
+        return .{
+            .score = 0,
+            .snake = snake,
+            .food = food,
+            .state = state,
+        };
+    }
+
+    /// Releases the owned snake body allocation.
+    pub fn deinit(self: *ClassicGame, alloc: std.mem.Allocator) void {
+        self.snake.deinit(alloc);
+    }
+
+    /// Returns an unoccupied food cell, or null when the snake fills the board.
+    pub fn spawnFood(self: *ClassicGame, rand: std.Random) ?Food {
+        // check if board is full with snakes body
+        if (self.snake.len() == core.GRID_HEIGHT * core.GRID_WIDTH) return null;
+        var new_food = Food.new(rand);
+        // generate new food pos thats not the snakes body
+        while (core.bodyContains(self.snake.body.items, new_food.pos)) {
+            new_food = Food.new(rand);
+        }
+
+        return new_food;
+    }
+
+    /// Advances one Classic frame, growing on food and ending on a wall or self hit.
+    pub fn tick(
+        self: *ClassicGame,
+        alloc: std.mem.Allocator,
+        rand: std.Random,
+    ) !void {
+        if (core.nextPos(self.snake.direction, self.snake.body.items[0])) |next_pos| {
+            if (core.bodyContains(self.snake.body.items, next_pos)) {
+                self.state = .over;
+            }
+
+            try self.snake.addHead(alloc, next_pos);
+
+            if (std.meta.eql(next_pos, self.food.pos)) {
+                self.score += 1;
+
+                if (self.spawnFood(rand)) |food| self.food = food else self.state = .over;
+            } else {
+                self.snake.removeTail();
+            }
+        } else {
+            self.state = .over;
+        }
     }
 };
 
@@ -564,128 +703,6 @@ test "collision h2h test" {
     try t.expect(game.snakes.items(.is_dead)[0]);
     try t.expectEqual(2, game.snakes.items(.kills)[1]);
 }
-
-/// Per-snake outcome for one Tron tick.
-pub const Delta = struct {
-    death: ?TronGame.DeathResult,
-    nextPos: ?core.Position,
-
-    const init: Delta = .{ .death = null, .nextPos = null };
-
-    /// Fixed byte width of the binary delta wire format.
-    pub const encoded_len: usize = 4;
-    const Header = packed struct {
-        has_death: bool,
-        has_killer: bool,
-        has_pos: bool,
-        _: u5 = 0,
-    };
-
-    /// Encodes flags, killer index, and optional next-head position into four bytes.
-    ///
-    /// The dead snake index is implied by the delta's position in the frame.
-    pub fn encode(d: Delta) [4]u8 {
-        var payload: [4]u8 = undefined;
-        var header: Header = .{
-            .has_death = true,
-            .has_killer = true,
-            .has_pos = true,
-        };
-
-        if (d.death != null) {
-            header.has_killer = if (d.death.?.killer != null) true else false;
-        } else {
-            header.has_death = false;
-            header.has_killer = false;
-        }
-        header.has_pos = if (d.nextPos != null) true else false;
-
-        for (0..4) |i| {
-            switch (i) {
-                0 => payload[i] = @bitCast(header),
-                1 => payload[i] = if (header.has_killer) d.death.?.killer.? else 0,
-                2 => payload[i] = if (header.has_pos) d.nextPos.?.x else 0,
-                3 => payload[i] = if (header.has_pos) d.nextPos.?.y else 0,
-                else => {},
-            }
-        }
-        return payload;
-    }
-
-    test "encode Delta" {
-        const delta = Delta{
-            .death = .{ .died = 1, .killer = 4 },
-            .nextPos = .{ .x = 3, .y = 5 },
-        };
-        const expected: [4]u8 = .{ 0x07, 4, 3, 5 };
-
-        const encoded_delta = delta.encode();
-        try t.expectEqual(expected, encoded_delta);
-    }
-};
-
-/// Single-player Snake state with food, scoring, and tail removal.
-pub const ClassicGame = struct {
-    score: u8,
-    state: GameState,
-    snake: core.Snake,
-    food: Food,
-
-    /// Creates a running Classic game with a centered snake and random food.
-    pub fn init(alloc: std.mem.Allocator, rand: std.Random) !ClassicGame {
-        const snake = try core.Snake.init(alloc);
-        const state: GameState = .running;
-        const food = Food.new(rand);
-
-        return .{
-            .score = 0,
-            .snake = snake,
-            .food = food,
-            .state = state,
-        };
-    }
-
-    /// Releases the owned snake body allocation.
-    pub fn deinit(self: *ClassicGame, alloc: std.mem.Allocator) void {
-        self.snake.deinit(alloc);
-    }
-
-    /// Returns an unoccupied food cell, or null when the snake fills the board.
-    pub fn spawnFood(self: *ClassicGame, rand: std.Random) ?Food {
-        // check if board is full with snakes body
-        if (self.snake.len() == core.GRID_HEIGHT * core.GRID_WIDTH) return null;
-        var new_food = Food.new(rand);
-        // generate new food pos thats not the snakes body
-        while (core.bodyContains(self.snake.body.items, new_food.pos)) {
-            new_food = Food.new(rand);
-        }
-
-        return new_food;
-    }
-
-    /// Advances one Classic frame, growing on food and ending on a wall or self hit.
-    pub fn tick(
-        self: *ClassicGame,
-        alloc: std.mem.Allocator,
-        rand: std.Random,
-    ) !void {
-        if (core.nextPos(self.snake.direction, self.snake.body.items[0])) |next_pos| {
-            if (core.bodyContains(self.snake.body.items, next_pos)) {
-                self.state = .over;
-            }
-            try self.snake.addHead(alloc, next_pos);
-
-            if (std.meta.eql(next_pos, self.food.pos)) {
-                self.score += 1;
-                if (self.spawnFood(rand)) |food| self.food = food else self.state = .over;
-            } else {
-                self.snake.removeTail();
-            }
-        } else {
-            self.state = .over;
-        }
-    }
-};
 
 test "classic snake movement" {
     const seed: u64 = @intCast(std.Io.Clock.awake.now(tio).nanoseconds);
