@@ -75,11 +75,11 @@ test "write a queued message to websocket" {
         .output = &w,
     };
 
-    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addClient(talloc, tio);
     const msg = "hi";
     try s.broadcast(tio, msg, .text); // each player receives outbound msg
 
-    const player = s.players.items[0];
+    const player = s.clients.items[0];
     try writeOneOutbound(tio, &ws, &player.outbound); // first outbound msg is written to ws.output
 
     try std.testing.expectEqualSlices(
@@ -133,7 +133,7 @@ fn handleWs(
     sman: *session.SessionManager,
     s: *session.Session,
 ) !void {
-    const idx = s.addPlayer(alloc, io) catch |err| {
+    const idx = s.addClient(alloc, io) catch |err| {
         try ws.output.print("{}", .{err});
         try ws.output.flush();
         return err;
@@ -141,13 +141,13 @@ fn handleWs(
     defer sman.removeSession(alloc, io, s) catch |err| {
         std.log.err("failed to remove session: {}", .{err});
     };
-    defer s.removePlayer(io, idx) catch |err| {
+    defer s.removeClient(io, idx) catch |err| {
         std.log.err("failed to remove player {}: {}", .{ idx, err });
     };
 
     var conn_group: std.Io.Group = .init;
     defer conn_group.cancel(io);
-    const player = s.players.items[idx];
+    const player = s.clients.items[idx];
     try conn_group.concurrent(
         io,
         writeOutboundLoop,
@@ -158,7 +158,7 @@ fn handleWs(
         try readOneInbound(s, io, ws, idx);
     }
 
-    std.debug.print("Player {} disconnected", .{idx});
+    std.debug.print("Client {} disconnected", .{idx});
     return;
 }
 
@@ -200,7 +200,13 @@ fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void {
                         conn.alloc,
                         conn.io,
                     );
-                    handleWs(conn.alloc, conn.io, &ws, session_man, s) catch |err| {
+                    handleWs(
+                        conn.alloc,
+                        conn.io,
+                        &ws,
+                        session_man,
+                        s,
+                    ) catch |err| {
                         std.log.err("{}", .{err});
                         return;
                     };

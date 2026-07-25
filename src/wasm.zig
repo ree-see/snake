@@ -39,11 +39,11 @@ export fn getScore() u8 {
     return game.score;
 }
 
-export fn getFoodPosX() u8 {
+export fn getFoodPosX() u32 {
     return game.food.pos.x;
 }
 
-export fn getFoodPosY() u8 {
+export fn getFoodPosY() u32 {
     return game.food.pos.y;
 }
 

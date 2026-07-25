@@ -5,6 +5,33 @@ const t = std.testing;
 const tio = t.io;
 const talloc = t.allocator;
 
+pub const SnakeSnapshot = struct {
+    idx: usize,
+    x: u8,
+    y: u8,
+
+    pub fn fromTron(
+        alloc: std.mem.Allocator,
+        game: *const TronGame,
+    ) ![]SnakeSnapshot {
+        const s = game.snakes.slice();
+        const bodies = s.items(.body);
+        var buf: std.ArrayList(SnakeSnapshot) = .empty;
+        errdefer buf.deinit(alloc);
+        for (bodies, 0..) |body, i| {
+            std.debug.assert(body.items.len == 1);
+            const snake: SnakeSnapshot = .{
+                .idx = i,
+                .x = body.items[0].x,
+                .y = body.items[0].y,
+            };
+            try buf.append(alloc, snake);
+        }
+
+        return try buf.toOwnedSlice(alloc);
+    }
+};
+
 pub const GameState = enum {
     lobby,
     running,

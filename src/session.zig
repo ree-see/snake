@@ -1,4 +1,5 @@
 const std = @import("std");
+const json = std.json;
 const core = @import("core");
 const games = @import("games");
 const Bot = @import("bot");
@@ -170,11 +171,11 @@ pub const Session = struct {
     run_group: std.Io.Group,
     game: games.TronGame,
 
-    players: std.ArrayList(*Player),
+    clients: std.ArrayList(*Client),
     bots: std.ArrayList(Bot),
     queue: MessageQueue,
 
-    max_players: u8 = 5,
+    max_clients: u8 = 5,
 
     const SessionError = error{
         LockedMutex,
@@ -189,7 +190,7 @@ pub const Session = struct {
             .mutex = .init,
             .run_group = .init,
             .game = .init,
-            .players = .empty,
+            .clients = .empty,
             .queue = queue,
             .bots = .empty,
         };
@@ -199,10 +200,10 @@ pub const Session = struct {
         self.run_group.cancel(io);
         self.game.deinit(self.alloc);
         self.queue.deinit(self.alloc);
-        for (self.players.items) |player| {
-            self.alloc.destroy(player);
+        for (self.clients.items) |client| {
+            self.alloc.destroy(client);
         }
-        self.players.deinit(self.alloc);
+        self.clients.deinit(self.alloc);
         self.bots.deinit(self.alloc);
     }
 
@@ -235,45 +236,45 @@ pub const Session = struct {
         }
     }
 
-    pub fn addPlayer(self: *Session, alloc: std.mem.Allocator, io: std.Io) !usize {
+    pub fn addClient(self: *Session, alloc: std.mem.Allocator, io: std.Io) !usize {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
-        return self.addPlayerLocked(alloc);
+        return self.addClientLocked(alloc);
     }
 
-    pub fn addPlayerLocked(self: *Session, alloc: std.mem.Allocator) !usize {
+    pub fn addClientLocked(self: *Session, alloc: std.mem.Allocator) !usize {
         if (self.isFullLocked()) return SessionError.LobbyFull;
 
-        const player = try alloc.create(Player);
-        errdefer alloc.destroy(player);
-        player.* = Player.init;
-        player.outbound = std.Io.Queue(OutboundMsg).init(&player.outbound_buf);
+        const client = try alloc.create(Client);
+        errdefer alloc.destroy(client);
+        client.* = Client.init;
+        client.outbound = std.Io.Queue(OutboundMsg).init(&client.outbound_buf);
 
-        // replace first disconnected player with new player
-        for (self.players.items, 0..) |existing, i| {
+        // replace first disconnected client with new client
+        for (self.clients.items, 0..) |existing, i| {
             if (existing.status != .disconnected) continue;
-            player.idx = i;
-            self.players.items[i] = player;
+            client.snake_idx = i;
+            self.clients.items[i] = client;
             return i;
         }
 
-        player.idx = self.players.items.len;
-        try self.players.append(alloc, player);
-        return player.idx;
+        client.snake_idx = self.clients.items.len;
+        try self.clients.append(alloc, client);
+        return client.snake_idx;
     }
 
-    pub fn removePlayer(
+    pub fn removeClient(
         self: *Session,
         io: std.Io,
-        players_idx: usize,
+        clients_idx: usize,
     ) SessionError!void {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
-        return self.removePlayerLocked(players_idx);
+        return self.removeClientLocked(clients_idx);
     }
 
-    pub fn removePlayerLocked(self: *Session, players_idx: usize) void {
-        self.players.items[players_idx].status = .disconnected;
+    pub fn removeClientLocked(self: *Session, clients_idx: usize) void {
+        self.clients.items[clients_idx].status = .disconnected;
     }
 
     pub fn isFull(self: *Session, io: std.Io) SessionError!bool {
@@ -283,9 +284,9 @@ pub const Session = struct {
     }
 
     pub fn isFullLocked(self: *Session) bool {
-        if (self.players.items.len != self.max_players) return false;
-        for (self.players.items) |player| {
-            if (player.status != .connected) return false;
+        if (self.clients.items.len != self.max_clients) return false;
+        for (self.clients.items) |client| {
+            if (client.status != .connected) return false;
         }
         return true;
     }
@@ -344,7 +345,7 @@ pub const Session = struct {
         try self.broadcastLocked(io, msg, op);
     }
 
-    // This method only just pushes a message to each players queue doesn't actually broadcasts
+    // This method only just pushes a message to each clients queue doesn't actually broadcasts
     pub fn broadcastLocked(
         self: *Session,
         io: std.Io,
@@ -352,20 +353,24 @@ pub const Session = struct {
         op: std.http.Server.WebSocket.Opcode,
     ) !void {
         if (msg.len > OutboundMsg.max_frame_size) return error.MessageTooLarge;
-        for (self.players.items) |player| {
+        for (self.clients.items) |client| {
             var outbound: OutboundMsg = .{
                 .data = undefined,
                 .len = msg.len,
                 .op = op,
             };
             @memcpy(outbound.data[0..outbound.len], msg);
-            const queued = try player.outbound.put(io, &.{outbound}, 0);
-            if (queued == 0) {
-                var dropped: [1]OutboundMsg = undefined;
-                _ = try player.outbound.get(io, &dropped, 0);
-                std.debug.assert(try player.outbound.put(io, &.{outbound}, 0) == 1);
-            }
+            try enqueueOutbound(io, client, outbound);
         }
+    }
+
+    fn enqueueOutbound(io: std.Io, client: *Client, outbound: OutboundMsg) !void {
+        const queued = try client.outbound.put(io, &.{outbound}, 0);
+        if (queued != 0) return;
+
+        var dropped: [1]OutboundMsg = undefined;
+        _ = try client.outbound.get(io, &dropped, 0);
+        std.debug.assert(try client.outbound.put(io, &.{outbound}, 0) == 1);
     }
 
     pub fn endGame(self: *Session) void {
@@ -379,7 +384,7 @@ pub const Session = struct {
         rand: std.Random,
         countdown: usize,
     ) !void {
-        while (self.players.items.len == 0) {
+        while (self.clients.items.len == 0) {
             std.Io.sleep(io, std.Io.Duration.fromMilliseconds(500), std.Io.Clock.awake) catch return;
         } else {
             for (1..countdown + 1) |i| {
@@ -389,10 +394,38 @@ pub const Session = struct {
                 try self.broadcast(io, msg, .text);
             }
 
-            if (self.players.items.len <= self.max_players) try self.fillBots(io, self.max_players - self.players.items.len);
-            for (0..self.max_players) |_| {
+            if (self.clients.items.len <= self.max_clients) try self.fillBots(io, self.max_clients - self.clients.items.len);
+            for (0..self.max_clients) |_| {
                 try self.game.spawnSnake(alloc, rand);
             }
+
+            const snapshot = try games.SnakeSnapshot.fromTron(alloc, &self.game);
+            defer alloc.free(snapshot);
+
+            for (self.clients.items) |client| {
+                if (client.status != .connected) continue;
+
+                const init_msg: OutboundMsg.InitMessage = .{
+                    .kind = .init,
+                    .snake_idx = client.snake_idx,
+                    .snakes = snapshot,
+                };
+                var outbound: OutboundMsg = .{
+                    .data = undefined,
+                    .len = 0,
+                    .op = .text,
+                };
+                var w = std.Io.Writer.fixed(&outbound.data);
+                try json.Stringify.value(
+                    init_msg,
+                    .{ .whitespace = .minified },
+                    &w,
+                );
+                outbound.len = w.buffered().len;
+
+                try enqueueOutbound(io, client, outbound);
+            }
+
             self.game.state = .running;
         }
     }
@@ -413,7 +446,7 @@ pub const Session = struct {
     }
 
     pub fn fillBotsLocked(self: *Session, n_bots: usize) !void {
-        for (self.players.items.len..n_bots + self.players.items.len) |i| {
+        for (self.clients.items.len..n_bots + self.clients.items.len) |i| {
             self.bots.append(self.alloc, .{ .snake_idx = i }) catch @panic("OOM error");
         }
     }
@@ -433,19 +466,19 @@ pub const Session = struct {
     pub fn canRemove(self: *Session, io: std.Io) SessionError!bool {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
-        return self.hasNoPlayersLocked();
+        return self.hasNoClientsLocked();
     }
 
-    pub fn hasNoPlayers(self: *Session, io: std.Io) !bool {
+    pub fn hasNoClients(self: *Session, io: std.Io) !bool {
         try self.mutex.lock(io);
         defer self.mutex.unlock(io);
-        return self.hasNoPlayersLocked();
+        return self.hasNoClientsLocked();
     }
 
-    fn hasNoPlayersLocked(self: *Session) bool {
-        if (self.players.items.len == 0) return true;
-        for (self.players.items) |player| {
-            if (player.status == .connected) return false;
+    fn hasNoClientsLocked(self: *Session) bool {
+        if (self.clients.items.len == 0) return true;
+        for (self.clients.items) |client| {
+            if (client.status == .connected) return false;
         }
         return true;
     }
@@ -467,18 +500,32 @@ pub const OutboundMsg = struct {
     len: usize,
     op: std.http.Server.WebSocket.Opcode,
 
-    const max_frame_size: usize = 64;
+    const max_frame_size: usize = 256;
+
+    const MsgType = enum { init };
+
+    const InitMessage = struct {
+        kind: MsgType,
+        snake_idx: usize,
+        snakes: []games.SnakeSnapshot,
+    };
+
+    const initMsg: OutboundMsg = .{
+        .data = undefined,
+        .len = 0,
+        .op = .text,
+    };
 };
 
-test "enqueue a msg for a player in a sesison" {
+test "enqueue a msg for a client in a sesison" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addClient(talloc, tio);
 
     try s.broadcast(tio, "{{ \"countdown\": 1 }}", .text);
 
-    const actual = try s.players.items[0].outbound.getOne(tio);
+    const actual = try s.clients.items[0].outbound.getOne(tio);
     const expected_text = "{{ \"countdown\": 1 }}";
     const expected_op: std.http.Server.WebSocket.Opcode = .text;
 
@@ -491,21 +538,21 @@ test "two msg FIFO test" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addClient(talloc, tio);
 
     try s.broadcast(tio, "{{ \"countdown\": 2 }}", .text); // first in should be first out
     try s.broadcast(tio, "{{ \"countdown\": 1 }}", .text);
 
-    const first = try s.players.items[0].outbound.getOne(tio);
+    const first = try s.clients.items[0].outbound.getOne(tio);
     const first_expected = "{{ \"countdown\": 2 }}";
-    const second = try s.players.items[0].outbound.getOne(tio);
+    const second = try s.clients.items[0].outbound.getOne(tio);
     const second_expected = "{{ \"countdown\": 1 }}";
     try t.expectEqualStrings(first_expected, first.data[0..first.len]);
     try t.expectEqualStrings(second_expected, second.data[0..second.len]);
 }
 
-pub const Player = struct {
-    idx: usize,
+pub const Client = struct {
+    snake_idx: usize,
     outbound_buf: [10]OutboundMsg,
     outbound: std.Io.Queue(OutboundMsg),
     status: Status,
@@ -516,8 +563,8 @@ pub const Player = struct {
         dead,
     };
 
-    const init: Player = .{
-        .idx = undefined,
+    const init: Client = .{
+        .snake_idx = undefined,
         .outbound_buf = undefined,
         .outbound = undefined,
         .status = .connected,
@@ -532,14 +579,14 @@ test "lobby fills remaining slots with bots" {
     var prng = std.Random.DefaultPrng.init(seed);
     const rand = prng.random();
 
-    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addClient(talloc, tio);
 
     try s.startLobby(talloc, tio, rand, 1);
 
     try t.expectEqual(5, s.game.snakes.len);
-    try t.expectEqual(1, s.players.items.len);
+    try t.expectEqual(1, s.clients.items.len);
     try t.expectEqual(4, s.bots.items.len);
-    try t.expectEqual(0, s.players.items[0].idx);
+    try t.expectEqual(0, s.clients.items[0].snake_idx);
     for (0..s.bots.items.len) |i| {
         try t.expectEqual(i + 1, s.bots.items[i].snake_idx);
     }
@@ -553,7 +600,7 @@ test "session able to fill inputs from bots" {
     var prng = std.Random.DefaultPrng.init(seed);
     const rand = prng.random();
 
-    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addClient(talloc, tio);
     try s.startLobby(talloc, tio, rand, 1);
 
     try s.enqueueBotDecisions(tio);
@@ -566,12 +613,12 @@ test "session able to fill inputs from bots" {
     }
 }
 
-test "boardcast drops the oldest frame for a full player queue" {
+test "boardcast drops the oldest frame for a full client queue" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(talloc, tio);
-    const player = s.players.items[0];
+    _ = try s.addClient(talloc, tio);
+    const client = s.clients.items[0];
     const msgs = [_][]const u8{
         "0", "1", "2", "3", "4",  "5",
         "6", "7", "8", "9", "10",
@@ -580,7 +627,7 @@ test "boardcast drops the oldest frame for a full player queue" {
         try s.broadcast(tio, msg, .text);
     }
 
-    const first = try player.outbound.getOne(tio);
+    const first = try client.outbound.getOne(tio);
     try t.expectEqualStrings("1", first.data[0..first.len]);
 }
 
@@ -699,11 +746,11 @@ test "is lobby full" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
 
     try t.expect(try s.isFull(tio));
 }
@@ -712,13 +759,13 @@ test "is lobby full error" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
 
-    const full_lobby_err = s.addPlayer(talloc, tio) catch |err| err;
+    const full_lobby_err = s.addClient(talloc, tio) catch |err| err;
 
     try t.expectError(Session.SessionError.LobbyFull, full_lobby_err);
 }
@@ -730,22 +777,61 @@ test "is lobby full and game switched to running" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
-    _ = try s.addPlayer(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
+    _ = try s.addClient(talloc, tio);
 
     try s.startLobby(talloc, tio, rand, 1);
     try t.expectEqual(s.game.state, games.GameState.running);
 }
 
-test "remove player and replace idx with null" {
+test "remove client and replace idx with null" {
     var s = try Session.init(talloc);
     defer s.deinit(tio);
 
-    const player_idx = try s.addPlayer(talloc, tio);
-    try s.removePlayer(tio, player_idx);
+    const client_idx = try s.addClient(talloc, tio);
+    try s.removeClient(tio, client_idx);
 
-    try t.expectEqual(Player.Status.disconnected, s.players.items[player_idx].status);
+    try t.expectEqual(Client.Status.disconnected, s.clients.items[client_idx].status);
+}
+
+test "initialization is personalized delivery, not a broadcast" {
+    var prng = std.Random.DefaultPrng.init(0);
+    const rand = prng.random();
+    var s = try Session.init(talloc);
+    defer s.deinit(tio);
+
+    const snake_idx = try s.addClient(talloc, tio);
+    try s.startLobby(talloc, tio, rand, 0);
+    // x = 107, y = 2
+
+    var received: [1]OutboundMsg = undefined;
+    const queued_frame = try s.clients.items[snake_idx].outbound.get(tio, &received, 0);
+    try t.expect(queued_frame == 1);
+    const init_msg = received[0];
+    const data = init_msg.data[0..init_msg.len];
+    const parsed_data = try json.parseFromSlice(
+        OutboundMsg.InitMessage,
+        talloc,
+        data,
+        .{},
+    );
+    defer parsed_data.deinit();
+
+    try t.expectEqual(OutboundMsg.MsgType.init, parsed_data.value.kind);
+    try t.expectEqual(snake_idx, parsed_data.value.snake_idx);
+    try t.expectEqual(s.game.snakes.len, parsed_data.value.snakes.len);
+
+    const snakes = s.game.snakes.slice();
+    const bodies = snakes.items(.body);
+    for (bodies, 0..) |body, i| {
+        const head = body.items[0];
+        try t.expect(parsed_data.value.snakes[i].idx == i);
+        try t.expectEqual(head.x, parsed_data.value.snakes[i].x);
+        try t.expectEqual(head.y, parsed_data.value.snakes[i].y);
+    }
+
+    try t.expectEqual(std.http.Server.WebSocket.Opcode.text, init_msg.op);
 }
