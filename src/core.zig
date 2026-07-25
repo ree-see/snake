@@ -4,9 +4,12 @@ const t = std.testing;
 const tio = t.io;
 const talloc = t.allocator;
 
+/// Number of addressable columns in every game board.
 pub const GRID_WIDTH = 128;
+/// Number of addressable rows in every game board.
 pub const GRID_HEIGHT = 96;
 
+/// Returns a direction and the opposite corner used for a snake spawn.
 pub fn gridCorner(direction: Snake.Direction) struct { Snake.Direction, Position } {
     const top_left = Position{ .x = 0, .y = 0 };
     const top_right = Position{ .x = GRID_WIDTH - 1, .y = 0 };
@@ -21,6 +24,7 @@ pub fn gridCorner(direction: Snake.Direction) struct { Snake.Direction, Position
     }
 }
 
+/// Returns the board's integer center cell.
 pub fn gridCenter() Position {
     const x = GRID_WIDTH / 2;
     const y = GRID_HEIGHT / 2;
@@ -28,6 +32,7 @@ pub fn gridCenter() Position {
     return Position{ .x = x, .y = y };
 }
 
+/// Returns the adjacent cell in `direction`, or null when it leaves the board.
 pub fn nextPos(direction: Snake.Direction, head: Position) ?Position {
     return switch (direction) {
         .up => if (head.y == 0) null else .{
@@ -49,6 +54,7 @@ pub fn nextPos(direction: Snake.Direction, head: Position) ?Position {
     };
 }
 
+/// Reports whether a snake body occupies `target`.
 pub fn bodyContains(body: []const Position, target: Position) bool {
     for (body) |pos| {
         if (std.meta.eql(pos, target)) return true;
@@ -56,6 +62,7 @@ pub fn bodyContains(body: []const Position, target: Position) bool {
     return false;
 }
 
+/// Applies a turn unless it would directly reverse the current direction.
 pub fn setDirection(curr_dir: Snake.Direction, new_dir: Snake.Direction) Snake.Direction {
     return switch (new_dir) {
         .up => if (curr_dir != .down) new_dir else curr_dir,
@@ -65,6 +72,7 @@ pub fn setDirection(curr_dir: Snake.Direction, new_dir: Snake.Direction) Snake.D
     };
 }
 
+/// Maps the supported i/j/k/l input bytes to a direction.
 pub fn dirFromKeyPress(key_press: u8) !Snake.Direction {
     return switch (key_press) {
         105 => .up,
@@ -75,6 +83,7 @@ pub fn dirFromKeyPress(key_press: u8) !Snake.Direction {
     };
 }
 
+/// Returns the i/j/k/l input byte for a direction.
 pub fn keyPressFromDir(dir: Snake.Direction) u8 {
     return switch (dir) {
         .up => 105,
@@ -83,17 +92,20 @@ pub fn keyPressFromDir(dir: Snake.Direction) u8 {
         .right => 108,
     };
 }
+/// A grid coordinate shared by native, network, and WASM code.
 pub const Position = extern struct {
     x: u8,
     y: u8,
 };
 
+/// Mutable simulation state for one snake with its head at body index zero.
 pub const Snake = struct {
     is_dead: bool,
     direction: Direction,
     kills: u8,
     body: std.ArrayList(Position),
 
+    /// The four non-diagonal movement directions.
     pub const Direction = enum {
         left,
         right,
@@ -101,6 +113,7 @@ pub const Snake = struct {
         down,
     };
 
+    /// Creates a live snake at the board center, moving right.
     pub fn init(gpa: std.mem.Allocator) !Snake {
         var body = std.ArrayList(Position).empty;
         try body.append(gpa, gridCenter());
@@ -113,6 +126,7 @@ pub const Snake = struct {
         };
     }
 
+    /// Creates a live one-cell snake at a caller-selected position and direction.
     pub fn initAt(gpa: std.mem.Allocator, starting_pos: Position, starting_direciton: Direction) !Snake {
         var body = std.ArrayList(Position).empty;
         try body.append(gpa, starting_pos);
@@ -125,31 +139,38 @@ pub const Snake = struct {
         };
     }
 
+    /// Releases the snake body allocation using the allocator passed to init.
     pub fn deinit(self: *Snake, gpa: std.mem.Allocator) void {
         self.body.deinit(gpa);
     }
 
+    /// Marks the snake dead and removes every occupied body cell.
     pub fn kill(self: *Snake) void {
         self.is_dead = true;
         self.clearBody();
     }
 
+    /// Prepends a new head cell without changing the tail.
     pub fn addHead(self: *Snake, gpa: std.mem.Allocator, next_pos: Position) !void {
         try self.body.insert(gpa, 0, next_pos);
     }
 
+    /// Removes the last body cell from a non-empty snake.
     pub fn removeTail(self: *Snake) void {
         _ = self.body.pop();
     }
 
+    /// Returns the current number of occupied body cells.
     pub fn len(self: *Snake) usize {
         return self.body.items.len;
     }
 
+    /// Removes all body cells while retaining the allocated capacity.
     pub fn clearBody(self: *Snake) void {
         self.body.clearRetainingCapacity();
     }
 
+    /// Grows the snake by one cell when its next position remains on the board.
     pub fn step(self: *Snake, gpa: std.mem.Allocator) !void {
         if (nextPos(self.direction, self.body.items[0])) |target|
             try self.addHead(gpa, target);

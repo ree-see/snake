@@ -5,11 +5,15 @@ const t = std.testing;
 const tio = t.io;
 const talloc = t.allocator;
 
+/// Initial head position for one snake in a client match snapshot.
 pub const SnakeSnapshot = struct {
     idx: usize,
     x: u8,
     y: u8,
 
+    /// Allocates snapshots for every pre-tick Tron snake.
+    ///
+    /// The caller owns and must free the returned slice with `alloc`.
     pub fn fromTron(
         alloc: std.mem.Allocator,
         game: *const TronGame,
@@ -32,6 +36,7 @@ pub const SnakeSnapshot = struct {
     }
 };
 
+/// Lifecycle state shared by game variants and sessions.
 pub const GameState = enum {
     lobby,
     running,
@@ -52,10 +57,12 @@ const Food = struct {
     }
 };
 
+/// A randomized initial position and direction for a Tron snake.
 pub const Spawn = struct {
     pos: core.Position,
     direction: core.Snake.Direction,
 
+    /// Chooses a spawn within the board margin. Occupancy is checked by the caller.
     pub fn new(rand: std.Random) !Spawn {
         const x = rand.intRangeLessThan(u8, 0, core.GRID_WIDTH - 5);
         const y = rand.intRangeLessThan(u8, 0, core.GRID_HEIGHT - 5);
@@ -71,6 +78,7 @@ pub const Spawn = struct {
     }
 };
 
+/// Server-authoritative, trail-growing multiplayer game state.
 pub const TronGame = struct {
     state: GameState,
     snakes: std.MultiArrayList(core.Snake),
@@ -78,12 +86,14 @@ pub const TronGame = struct {
 
     const DeathResult = struct { died: u8, killer: ?u8 };
 
+    /// Empty lobby state ready to receive spawned snakes.
     pub const init: TronGame = .{
         .state = .lobby,
         .snakes = .empty,
         .deltas = .empty,
     };
 
+    /// Releases every snake body, SoA column, and accumulated delta.
     pub fn deinit(self: *TronGame, alloc: std.mem.Allocator) void {
         // Each body owns its own heap allocation — free them before the columns.
         for (self.snakes.items(.body)) |*body| body.deinit(alloc);
@@ -91,6 +101,7 @@ pub const TronGame = struct {
         self.deltas.deinit(alloc);
     }
 
+    /// Reports whether no current snake body occupies `pos`.
     pub fn isPosAvailable(self: *const TronGame, pos: core.Position) bool {
         const s = self.snakes.slice();
         const bodies = s.items(.body);
@@ -100,6 +111,7 @@ pub const TronGame = struct {
         return true;
     }
 
+    /// Appends one randomly placed snake whose initial cell is unoccupied.
     pub fn spawnSnake(
         self: *TronGame,
         alloc: std.mem.Allocator,
@@ -117,6 +129,9 @@ pub const TronGame = struct {
         );
     }
 
+    /// Encodes the current per-snake deltas into caller-provided storage.
+    ///
+    /// `buf` must hold `deltas.len * Delta.encoded_len` bytes.
     pub fn encodeDeltas(self: *const TronGame, buf: []u8) []u8 {
         const needed = self.deltas.items.len * Delta.encoded_len;
         std.debug.assert(buf.len >= needed);
@@ -131,7 +146,7 @@ pub const TronGame = struct {
         return buf[0..needed];
     }
 
-    // Snapshot each live snake's next head cell; dead snakes are null.
+    /// Snapshots each live snake's next head cell; dead snakes produce null.
     pub fn nextPositions(self: *TronGame, alloc: std.mem.Allocator) !void {
         const s = self.snakes.slice();
         const dead = s.items(.is_dead);
@@ -150,8 +165,7 @@ pub const TronGame = struct {
         }
     }
 
-    // Two live heads aiming at the same cell: the one with fewer kills dies
-    // (ties: the higher index dies), the other is credited the kill.
+    /// Resolves equal-target head collisions using kills, then lower index, as ties.
     pub fn checkH2HCollision(self: *TronGame) void {
         const positions = self.deltas.items;
         const s = self.snakes.slice();
@@ -183,7 +197,7 @@ pub const TronGame = struct {
         }
     }
 
-    // A live head stepping into any snake's body dies; that snake gets the kill.
+    /// Marks heads that enter another snake's body dead and credits the owner.
     pub fn checkBodyCollision(self: *TronGame) void {
         const s = self.snakes.slice();
         const dead = s.items(.is_dead);
@@ -206,8 +220,7 @@ pub const TronGame = struct {
         }
     }
 
-    // A live head with no legal next cell (wall) or stepping into itself dies,
-    // uncredited.
+    /// Marks wall and self collisions dead without awarding a kill.
     pub fn checkSelfCollision(self: *TronGame) void {
         const s = self.snakes.slice();
         const dead = s.items(.is_dead);
@@ -233,6 +246,7 @@ pub const TronGame = struct {
         }
     }
 
+    /// Applies recorded deaths by clearing bodies and incrementing credited kills.
     pub fn applyDeaths(self: *TronGame) void {
         const s = self.snakes.slice();
         const dead = s.items(.is_dead);
@@ -247,6 +261,7 @@ pub const TronGame = struct {
         }
     }
 
+    /// Prepends each surviving next head and ends the game with zero or one survivors.
     pub fn advanceSnakes(self: *TronGame, alloc: std.mem.Allocator) !void {
         const s = self.snakes.slice();
         const dead = s.items(.is_dead);
@@ -266,11 +281,13 @@ pub const TronGame = struct {
         if (dead_count == self.snakes.len - 1 or dead_count == self.snakes.len) self.state = .over;
     }
 
+    /// Clears the prior frame's deltas and captures positions for the next frame.
     pub fn resetDelta(self: *TronGame, alloc: std.mem.Allocator) !void {
         self.deltas.clearRetainingCapacity();
         try self.nextPositions(alloc);
     }
 
+    /// Advances one deterministic Tron frame through collision and movement phases.
     pub fn tick(self: *TronGame, alloc: std.mem.Allocator) !void {
         try self.resetDelta(alloc);
         self.checkBodyCollision();
@@ -548,12 +565,14 @@ test "collision h2h test" {
     try t.expectEqual(2, game.snakes.items(.kills)[1]);
 }
 
+/// Per-snake outcome for one Tron tick.
 pub const Delta = struct {
     death: ?TronGame.DeathResult,
     nextPos: ?core.Position,
 
     const init: Delta = .{ .death = null, .nextPos = null };
 
+    /// Fixed byte width of the binary delta wire format.
     pub const encoded_len: usize = 4;
     const Header = packed struct {
         has_death: bool,
@@ -562,10 +581,9 @@ pub const Delta = struct {
         _: u5 = 0,
     };
 
-    // byte 1: header 00000 has_death, has_killer, has_pos
-    // byte 2: death killer snake idx
-    // byte 3: x pos
-    // byte 4: y pos
+    /// Encodes flags, killer index, and optional next-head position into four bytes.
+    ///
+    /// The dead snake index is implied by the delta's position in the frame.
     pub fn encode(d: Delta) [4]u8 {
         var payload: [4]u8 = undefined;
         var header: Header = .{
@@ -606,12 +624,14 @@ pub const Delta = struct {
     }
 };
 
+/// Single-player Snake state with food, scoring, and tail removal.
 pub const ClassicGame = struct {
     score: u8,
     state: GameState,
     snake: core.Snake,
     food: Food,
 
+    /// Creates a running Classic game with a centered snake and random food.
     pub fn init(alloc: std.mem.Allocator, rand: std.Random) !ClassicGame {
         const snake = try core.Snake.init(alloc);
         const state: GameState = .running;
@@ -625,10 +645,12 @@ pub const ClassicGame = struct {
         };
     }
 
+    /// Releases the owned snake body allocation.
     pub fn deinit(self: *ClassicGame, alloc: std.mem.Allocator) void {
         self.snake.deinit(alloc);
     }
 
+    /// Returns an unoccupied food cell, or null when the snake fills the board.
     pub fn spawnFood(self: *ClassicGame, rand: std.Random) ?Food {
         // check if board is full with snakes body
         if (self.snake.len() == core.GRID_HEIGHT * core.GRID_WIDTH) return null;
@@ -641,6 +663,7 @@ pub const ClassicGame = struct {
         return new_food;
     }
 
+    /// Advances one Classic frame, growing on food and ending on a wall or self hit.
     pub fn tick(
         self: *ClassicGame,
         alloc: std.mem.Allocator,

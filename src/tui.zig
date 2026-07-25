@@ -31,6 +31,7 @@ const Grid = struct {
     }
 };
 
+/// Draws a Classic game into the terminal and clears the scratch grid afterward.
 pub fn render(
     grid: *Grid,
     game: *games.ClassicGame,
@@ -80,6 +81,7 @@ pub fn render(
     try stdout.flush();
 }
 
+/// Enables non-canonical terminal input and returns state for later restoration.
 pub fn enableRawMode() !termios {
     const term = try std.posix.tcgetattr(STDIN_FILENO);
     var raw = term;
@@ -94,10 +96,12 @@ pub fn enableRawMode() !termios {
     return term;
 }
 
+/// Restores a terminal state returned by `enableRawMode`.
 pub fn disableRawMode(term: termios) !void {
     try std.posix.tcsetattr(STDIN_FILENO, .FLUSH, term);
 }
 
+/// Returns the current terminal dimensions through libc's window-size ioctl.
 pub fn termSize() std.posix.winsize {
     var ws: std.posix.winsize = undefined;
     // when calling this make sure to add .is_linking_libc to build.zig
@@ -105,6 +109,7 @@ pub fn termSize() std.posix.winsize {
     return ws;
 }
 
+/// Runs the Classic Snake terminal frontend until Escape or game over.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     var stdout_buffer: [0x100]u8 = undefined;

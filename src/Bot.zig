@@ -26,6 +26,7 @@ fn isSafe(
     return game_state.isPosAvailable(next_pos);
 }
 
+/// Chooses a safe forward or perpendicular turn for the bot's assigned snake.
 pub fn decide(
     self: *Bot,
     game_state: *const games.TronGame,

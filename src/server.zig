@@ -218,6 +218,7 @@ fn handleConn(conn: *Connection, session_man: *session.SessionManager) !void {
     }
 }
 
+/// Serves static assets and hosts WebSocket-backed multiplayer sessions on port 8080.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     // FIXME: this prolly needs to be switch once hosted somewhere
@@ -246,6 +247,7 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
+/// Serves a request from the relative `web/` directory with traversal protection.
 pub fn serveFile(
     req: *http.Server.Request,
     io: std.Io,

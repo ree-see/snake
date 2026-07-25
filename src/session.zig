@@ -8,10 +8,14 @@ const talloc = std.testing.allocator;
 const t = std.testing;
 const tio = std.testing.io;
 
+/// Owns all active sessions and assigns joining clients to open lobbies.
+///
+/// Its mutex protects the session list. Individual sessions use separate mutexes.
 pub const SessionManager = struct {
     mutex: std.Io.Mutex,
     sessions: std.ArrayList(*Session),
 
+    /// Creates an empty session manager.
     pub fn init() SessionManager {
         const sessions = std.ArrayList(*Session).empty;
         const mutex = std.Io.Mutex.init;
@@ -23,6 +27,7 @@ pub const SessionManager = struct {
         return sman;
     }
 
+    /// Cancels, deinitializes, and destroys every managed session.
     pub fn deinit(
         self: *SessionManager,
         alloc: std.mem.Allocator,
@@ -35,6 +40,7 @@ pub const SessionManager = struct {
         self.sessions.deinit(alloc);
     }
 
+    /// Runs one session and records unexpected failures as a game-over state.
     pub fn runSession(s: *Session, io: std.Io) std.Io.Cancelable!void {
         s.run(s.alloc, io) catch |err| switch (err) {
             error.Canceled => return error.Canceled,
@@ -48,6 +54,7 @@ pub const SessionManager = struct {
         };
     }
 
+    /// Returns an open lobby or creates and starts a new session.
     pub fn findOrCreateSession(
         self: *SessionManager,
         alloc: std.mem.Allocator,
@@ -73,7 +80,7 @@ pub const SessionManager = struct {
         return new_session;
     }
 
-    // use if SessionManager isn't locked
+    /// Adds a session while acquiring the manager mutex.
     pub fn addSession(
         self: *SessionManager,
         alloc: std.mem.Allocator,
@@ -86,14 +93,14 @@ pub const SessionManager = struct {
         try self.sessions.append(alloc, s_ptr);
     }
 
-    // not safe to use make sure SessionManager is locked
+    /// Adds a session while the caller holds the manager mutex.
     pub fn addSessionLocked(self: *SessionManager, alloc: std.mem.Allocator) !void {
         const s_ptr = try alloc.create(Session);
         s_ptr.* = try Session.init(alloc);
         try self.sessions.append(alloc, s_ptr);
     }
 
-    // use if SessionManager isn't locked
+    /// Removes an empty session while acquiring the manager mutex.
     pub fn removeSession(
         self: *SessionManager,
         alloc: std.mem.Allocator,
@@ -105,7 +112,7 @@ pub const SessionManager = struct {
         try self.removeSessionLocked(alloc, io, s);
     }
 
-    // not safe to use make sure SessionManager is locked
+    /// Removes an empty session while the caller holds the manager mutex.
     pub fn removeSessionLocked(
         self: *SessionManager,
         alloc: std.mem.Allocator,
@@ -165,6 +172,7 @@ test "remove new session" {
     try t.expectEqual(sman.sessions.items.len, 0);
 }
 
+/// Owns one Tron match, its connected clients, bots, and synchronized input queue.
 pub const Session = struct {
     alloc: std.mem.Allocator,
     mutex: std.Io.Mutex,
@@ -182,6 +190,7 @@ pub const Session = struct {
         LobbyFull,
     };
 
+    /// Creates an empty lobby using `alloc` for all owned game state.
     pub fn init(alloc: std.mem.Allocator) !Session {
         const queue = MessageQueue.init(alloc, 64);
 
@@ -196,6 +205,7 @@ pub const Session = struct {
         };
     }
 
+    /// Cancels session work and releases clients, bots, queues, and game state.
     pub fn deinit(self: *Session, io: std.Io) void {
         self.run_group.cancel(io);
         self.game.deinit(self.alloc);
@@ -207,22 +217,26 @@ pub const Session = struct {
         self.bots.deinit(self.alloc);
     }
 
+    /// Reports whether a client may join the lobby while synchronizing access.
     pub fn canJoin(self: *Session, io: std.Io) SessionError!bool {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         self.mutex.unlock(io);
         return self.canJoinLocked();
     }
 
+    /// Reports whether a client may join while the session mutex is held.
     pub fn canJoinLocked(self: *Session) bool {
         return self.game.state == .lobby and !self.isFullLocked();
     }
 
+    /// Applies every queued direction input while synchronizing access.
     pub fn drain(self: *Session, io: std.Io) SessionError!void {
         self.mutex.lock(io) catch return Session.SessionError.LockedMutex;
         defer self.mutex.unlock(io);
         return self.drainLocked();
     }
 
+    /// Applies every queued direction input while the session mutex is held.
     pub fn drainLocked(self: *Session) void {
         while (true) {
             if (self.queue.pop()) |m| {
@@ -236,12 +250,14 @@ pub const Session = struct {
         }
     }
 
+    /// Adds a connected client and returns its assigned snake index.
     pub fn addClient(self: *Session, alloc: std.mem.Allocator, io: std.Io) !usize {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
         return self.addClientLocked(alloc);
     }
 
+    /// Adds a client while the session mutex is held.
     pub fn addClientLocked(self: *Session, alloc: std.mem.Allocator) !usize {
         if (self.isFullLocked()) return SessionError.LobbyFull;
 
@@ -263,6 +279,7 @@ pub const Session = struct {
         return client.snake_idx;
     }
 
+    /// Marks a client disconnected while synchronizing access.
     pub fn removeClient(
         self: *Session,
         io: std.Io,
@@ -273,16 +290,19 @@ pub const Session = struct {
         return self.removeClientLocked(clients_idx);
     }
 
+    /// Marks a client disconnected while the session mutex is held.
     pub fn removeClientLocked(self: *Session, clients_idx: usize) void {
         self.clients.items[clients_idx].status = .disconnected;
     }
 
+    /// Reports whether every match slot has a connected client.
     pub fn isFull(self: *Session, io: std.Io) SessionError!bool {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
         return self.isFullLocked();
     }
 
+    /// Reports whether every match slot has a connected client while locked.
     pub fn isFullLocked(self: *Session) bool {
         if (self.clients.items.len != self.max_clients) return false;
         for (self.clients.items) |client| {
@@ -291,6 +311,7 @@ pub const Session = struct {
         return true;
     }
 
+    /// Runs the authoritative tick loop until the Tron match ends.
     pub fn startGame(self: *Session, io: std.Io) !void {
         self.game.state = .running;
         var dead_count: u4 = 0;
@@ -334,6 +355,7 @@ pub const Session = struct {
         self.broadcast(io, msg[0..], .text) catch |err| std.log.err("{}", .{err});
     }
 
+    /// Queues an identical WebSocket frame for every client while synchronizing access.
     pub fn broadcast(
         self: *Session,
         io: std.Io,
@@ -345,7 +367,9 @@ pub const Session = struct {
         try self.broadcastLocked(io, msg, op);
     }
 
-    // This method only just pushes a message to each clients queue doesn't actually broadcasts
+    /// Queues an identical frame for every client while the session mutex is held.
+    ///
+    /// Connection writer loops perform the actual WebSocket writes.
     pub fn broadcastLocked(
         self: *Session,
         io: std.Io,
@@ -373,10 +397,14 @@ pub const Session = struct {
         std.debug.assert(try client.outbound.put(io, &.{outbound}, 0) == 1);
     }
 
+    /// Stops the current game loop on its next state check.
     pub fn endGame(self: *Session) void {
         self.game.state = .over;
     }
 
+    /// Waits for a client, runs the countdown, fills bot slots, and initializes the match.
+    ///
+    /// Each connected client receives a personalized JSON snapshot before running begins.
     pub fn startLobby(
         self: *Session,
         alloc: std.mem.Allocator,
@@ -430,6 +458,7 @@ pub const Session = struct {
         }
     }
 
+    /// Seeds and runs the lobby phase followed by the game phase.
     pub fn run(self: *Session, alloc: std.mem.Allocator, io: std.Io) !void {
         const seed: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
         var prng = std.Random.DefaultPrng.init(seed);
@@ -439,36 +468,42 @@ pub const Session = struct {
         try self.startGame(io);
     }
 
+    /// Appends bots for unoccupied match slots while synchronizing access.
     pub fn fillBots(self: *Session, io: std.Io, n_bots: usize) SessionError!void {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
         try self.fillBotsLocked(n_bots);
     }
 
+    /// Appends bots for unoccupied match slots while the session mutex is held.
     pub fn fillBotsLocked(self: *Session, n_bots: usize) !void {
         for (self.clients.items.len..n_bots + self.clients.items.len) |i| {
             self.bots.append(self.alloc, .{ .snake_idx = i }) catch @panic("OOM error");
         }
     }
 
+    /// Enqueues a client direction input while synchronizing access.
     pub fn pushMessage(self: *Session, io: std.Io, msg: MessageQueue.Message) SessionError!void {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
         self.queue.push(self.alloc, msg) catch @panic("OOM error");
     }
 
+    /// Removes the oldest client direction input while synchronizing access.
     pub fn popMessage(self: *Session, io: std.Io) SessionError!?MessageQueue.Message {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
         return self.queue.pop();
     }
 
+    /// Reports whether every client has disconnected and the session can be removed.
     pub fn canRemove(self: *Session, io: std.Io) SessionError!bool {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
         return self.hasNoClientsLocked();
     }
 
+    /// Reports whether no connected clients remain.
     pub fn hasNoClients(self: *Session, io: std.Io) !bool {
         try self.mutex.lock(io);
         defer self.mutex.unlock(io);
@@ -483,6 +518,7 @@ pub const Session = struct {
         return true;
     }
 
+    /// Queues one selected direction for every live bot.
     pub fn enqueueBotDecisions(self: *Session, io: std.Io) !void {
         for (self.bots.items) |*bot| {
             const dir = bot.decide(&self.game) orelse continue;
@@ -495,6 +531,9 @@ pub const Session = struct {
     }
 };
 
+/// Bounded, owned WebSocket frame data queued for one client.
+///
+/// When a client queue is full, sessions discard its oldest frame to retain recency.
 pub const OutboundMsg = struct {
     data: [max_frame_size]u8,
     len: usize,
@@ -551,6 +590,7 @@ test "two msg FIFO test" {
     try t.expectEqualStrings(second_expected, second.data[0..second.len]);
 }
 
+/// One connected human endpoint and the snake it controls in a session.
 pub const Client = struct {
     snake_idx: usize,
     outbound_buf: [10]OutboundMsg,
@@ -632,35 +672,42 @@ test "boardcast drops the oldest frame for a full client queue" {
 }
 
 // message queue that collects the message from clients that is owned
+/// FIFO collection of client direction inputs consumed by the session tick loop.
 pub const MessageQueue = struct {
     queue: std.Deque(Message),
 
+    /// A requested direction for the snake identified by `idx`.
     pub const Message = struct {
         idx: usize,
         direction: core.Snake.Direction,
     };
 
+    /// Allocates queue storage for up to `capacity` pending inputs.
     pub fn init(alloc: std.mem.Allocator, capacity: usize) MessageQueue {
         const queue = std.Deque(Message).initCapacity(alloc, capacity) catch unreachable;
         return .{ .queue = queue };
     }
 
+    /// Releases queue storage using the allocator supplied to init.
     pub fn deinit(self: *MessageQueue, alloc: std.mem.Allocator) void {
         self.queue.deinit(alloc);
     }
 
-    // add new message to the back of the queue
-    // Use Session.pushMessage when race conditions apply
+    /// Appends an input to the queue without session synchronization.
+    ///
+    /// Use `Session.pushMessage` when concurrent clients can write.
     pub fn push(self: *MessageQueue, alloc: std.mem.Allocator, message: Message) !void {
         try self.queue.pushBack(alloc, message);
     }
 
-    // remove the message at the front of the queue
-    // Use Session.popMessage when race conditions apply
+    /// Removes the oldest input without session synchronization.
+    ///
+    /// Use `Session.popMessage` when concurrent clients can write.
     pub fn pop(self: *MessageQueue) ?Message {
         return self.queue.popFront();
     }
 
+    /// Returns the number of pending inputs.
     pub fn len(self: *MessageQueue) usize {
         return self.queue.len;
     }
