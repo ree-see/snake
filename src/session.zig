@@ -1,5 +1,6 @@
 const std = @import("std");
 const json = std.json;
+
 const core = @import("core");
 const games = @import("games");
 const Bot = @import("bot");
@@ -16,29 +17,31 @@ pub const OutboundMsg = struct {
     len: usize,
     op: std.http.Server.WebSocket.Opcode,
 
-    const max_frame_size: usize = 256;
+    const max_frame_size: usize = 4096;
 
-    const MsgType = enum { init };
+    const MsgType = enum { init, resync };
 
     const InitMessage = struct {
         kind: MsgType,
         snake_idx: usize,
-        snakes: []games.SnakeSnapshot,
+        snakes: []games.InitialSnapshot,
     };
 
-    const initMsg: OutboundMsg = .{
-        .data = undefined,
-        .len = 0,
-        .op = .text,
+    const ResyncMessage = struct {
+        kind: MsgType,
+        sequence: u32,
+        snakes: []games.SnakeSnapshot,
     };
 };
 
 /// One connected human endpoint and the snake it controls in a session.
 pub const Client = struct {
     snake_idx: usize,
+    lastFrame: usize,
+    status: Status,
+
     outbound_buf: [10]OutboundMsg,
     outbound: std.Io.Queue(OutboundMsg),
-    status: Status,
 
     const Status = enum {
         connected,
@@ -48,6 +51,7 @@ pub const Client = struct {
 
     const init: Client = .{
         .snake_idx = undefined,
+        .lastFrame = 0,
         .outbound_buf = undefined,
         .outbound = undefined,
         .status = .connected,
@@ -55,46 +59,56 @@ pub const Client = struct {
 };
 
 /// FIFO collection of client direction inputs consumed by the session tick loop.
-pub const MessageQueue = struct {
-    queue: std.Deque(Message),
+pub const EventQueue = struct {
+    queue: std.Deque(Event),
 
+    pub const Event = union(enum) {
+        direction: DirectionEvent,
+        resync: ResyncEvent,
+    };
     /// A requested direction for the snake identified by `idx`.
-    pub const Message = struct {
+    pub const DirectionEvent = struct {
         idx: usize,
         direction: core.Snake.Direction,
     };
 
+    /// A requested authorative snapshot for a client out of sync
+    /// text ws opcode
+    pub const ResyncEvent = struct {
+        idx: usize,
+    };
+
     /// Allocates queue storage for up to `capacity` pending inputs.
-    pub fn init(alloc: std.mem.Allocator, capacity: usize) MessageQueue {
-        const queue = std.Deque(Message).initCapacity(alloc, capacity) catch unreachable;
+    pub fn init(alloc: std.mem.Allocator, capacity: usize) EventQueue {
+        const queue = std.Deque(Event).initCapacity(alloc, capacity) catch unreachable;
         return .{ .queue = queue };
     }
 
     /// Releases queue storage using the allocator supplied to init.
-    pub fn deinit(self: *MessageQueue, alloc: std.mem.Allocator) void {
+    pub fn deinit(self: *EventQueue, alloc: std.mem.Allocator) void {
         self.queue.deinit(alloc);
     }
 
     /// Appends an input to the queue without session synchronization.
     ///
-    /// Use `Session.pushMessage` when concurrent clients can write.
+    /// Use `Session.pushEvent` when concurrent clients can write.
     pub fn push(
-        self: *MessageQueue,
+        self: *EventQueue,
         alloc: std.mem.Allocator,
-        message: Message,
+        message: Event,
     ) !void {
         try self.queue.pushBack(alloc, message);
     }
 
     /// Removes the oldest input without session synchronization.
     ///
-    /// Use `Session.popMessage` when concurrent clients can write.
-    pub fn pop(self: *MessageQueue) ?Message {
+    /// Use `Session.popEvent` when concurrent clients can write.
+    pub fn pop(self: *EventQueue) ?Event {
         return self.queue.popFront();
     }
 
     /// Returns the number of pending inputs.
-    pub fn len(self: *MessageQueue) usize {
+    pub fn len(self: *EventQueue) usize {
         return self.queue.len;
     }
 };
@@ -240,7 +254,7 @@ pub const Session = struct {
 
     clients: std.ArrayList(*Client),
     bots: std.ArrayList(Bot),
-    queue: MessageQueue,
+    queue: EventQueue,
 
     max_clients: u8 = 5,
 
@@ -251,7 +265,7 @@ pub const Session = struct {
 
     /// Creates an empty lobby using `alloc` for all owned game state.
     pub fn init(alloc: std.mem.Allocator) !Session {
-        const queue = MessageQueue.init(alloc, 64);
+        const queue = EventQueue.init(alloc, 64);
 
         return .{
             .alloc = alloc,
@@ -289,23 +303,51 @@ pub const Session = struct {
     }
 
     /// Applies every queued direction input while synchronizing access.
-    pub fn drain(self: *Session, io: std.Io) SessionError!void {
-        self.mutex.lock(io) catch return Session.SessionError.LockedMutex;
+    pub fn drain(self: *Session, io: std.Io) !void {
+        try self.mutex.lock(io);
         defer self.mutex.unlock(io);
-        return self.drainLocked();
+        return try self.drainLocked(io);
     }
 
     /// Applies every queued direction input while the session mutex is held.
-    pub fn drainLocked(self: *Session) void {
+    pub fn drainLocked(self: *Session, io: std.Io) !void {
         while (true) {
-            if (self.queue.pop()) |m| {
-                const s = self.game.snakes.slice();
-                const curr_dir = s.items(.direction)[m.idx];
-                s.items(.direction)[m.idx] = core.setDirection(
-                    curr_dir,
-                    m.direction,
-                );
-            } else break;
+            const ev = self.queue.pop() orelse break;
+            switch (ev) {
+                .direction => |m| {
+                    const s = self.game.snakes.slice();
+                    const curr_dir = s.items(.direction)[m.idx];
+                    s.items(.direction)[m.idx] = core.setDirection(
+                        curr_dir,
+                        m.direction,
+                    );
+                },
+                .resync => |m| {
+                    const snakes = try games.SnakeSnapshot.fromTron(
+                        self.alloc,
+                        &self.game,
+                    );
+                    defer self.alloc.free(snakes);
+                    const init_msg: OutboundMsg.ResyncMessage = .{
+                        .kind = .resync,
+                        .sequence = self.game.seq,
+                        .snakes = snakes,
+                    };
+                    var outbound: OutboundMsg = .{
+                        .data = undefined,
+                        .len = 0,
+                        .op = .text,
+                    };
+                    var w = std.Io.Writer.fixed(&outbound.data);
+                    try json.Stringify.value(
+                        init_msg,
+                        .{ .whitespace = .minified },
+                        &w,
+                    );
+                    outbound.len = w.buffered().len;
+                    try enqueueOutbound(io, self.clients.items[m.idx], outbound);
+                },
+            }
         }
     }
 
@@ -380,18 +422,9 @@ pub const Session = struct {
         const dead = s.items(.is_dead);
         while (self.game.state != .over) {
             dead_count = 0;
-            // get each bots decision and enqueue them in self.queue
-            try self.drain(io);
-            self.game.tick(self.alloc) catch |err| {
-                std.debug.print("{}", .{err});
-                self.endGame();
-            };
-            std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), std.Io.Clock.awake) catch return;
 
-            // broadcast next render frame
-            var buf: [20]u8 = undefined;
-            const payload = self.game.encodeDeltas(&buf);
-            try self.broadcast(io, payload[0..], .binary);
+            try self.tickAndBroadcast(io);
+            // get each bots decision and enqueue them in self.queue
             for (dead, 0..) |is_dead, i| {
                 if (is_dead) {
                     dead_count += 1;
@@ -412,6 +445,20 @@ pub const Session = struct {
         }
 
         self.broadcast(io, msg[0..], .text) catch |err| std.log.err("{}", .{err});
+    }
+
+    pub fn tickAndBroadcast(self: *Session, io: std.Io) !void {
+        try self.drain(io);
+        self.game.tick(self.alloc) catch |err| {
+            std.debug.print("{}", .{err});
+            self.endGame();
+        };
+        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), std.Io.Clock.awake) catch return;
+
+        // broadcast next render frame
+        var buf: [24]u8 = undefined;
+        const payload = self.game.encodeDeltas(&buf);
+        try self.broadcast(io, payload[0..], .binary);
     }
 
     /// Queues an identical WebSocket frame for every client while synchronizing access.
@@ -435,7 +482,7 @@ pub const Session = struct {
         msg: []const u8,
         op: std.http.Server.WebSocket.Opcode,
     ) !void {
-        if (msg.len > OutboundMsg.max_frame_size) return error.MessageTooLarge;
+        if (msg.len > OutboundMsg.max_frame_size) return error.EventTooLarge;
         for (self.clients.items) |client| {
             var outbound: OutboundMsg = .{
                 .data = undefined,
@@ -486,7 +533,7 @@ pub const Session = struct {
                 try self.game.spawnSnake(alloc, rand);
             }
 
-            const snapshot = try games.SnakeSnapshot.fromTron(alloc, &self.game);
+            const snapshot = try games.InitialSnapshot.fromTron(alloc, &self.game);
             defer alloc.free(snapshot);
 
             for (self.clients.items) |client| {
@@ -542,10 +589,10 @@ pub const Session = struct {
     }
 
     /// Enqueues a client direction input while synchronizing access.
-    pub fn pushMessage(
+    pub fn pushEvent(
         self: *Session,
         io: std.Io,
-        msg: MessageQueue.Message,
+        msg: EventQueue.Event,
     ) SessionError!void {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
@@ -553,7 +600,7 @@ pub const Session = struct {
     }
 
     /// Removes the oldest client direction input while synchronizing access.
-    pub fn popMessage(self: *Session, io: std.Io) SessionError!?MessageQueue.Message {
+    pub fn popEvent(self: *Session, io: std.Io) SessionError!?EventQueue.Event {
         self.mutex.lock(io) catch return SessionError.LockedMutex;
         defer self.mutex.unlock(io);
         return self.queue.pop();
@@ -585,11 +632,10 @@ pub const Session = struct {
     pub fn enqueueBotDecisions(self: *Session, io: std.Io) !void {
         for (self.bots.items) |*bot| {
             const dir = bot.decide(&self.game) orelse continue;
-            const msg: MessageQueue.Message = .{
-                .idx = bot.snake_idx,
-                .direction = dir,
+            const msg: EventQueue.Event = .{
+                .direction = .{ .idx = bot.snake_idx, .direction = dir },
             };
-            try self.pushMessage(io, msg);
+            try self.pushEvent(io, msg);
         }
     }
 };
@@ -666,8 +712,8 @@ test "session able to fill inputs from bots" {
     try t.expectEqual(4, s.queue.len());
 
     for (0..s.bots.items.len) |i| {
-        const bot_msg = try s.popMessage(tio);
-        try t.expectEqual(i + 1, bot_msg.?.idx);
+        const bot_msg = try s.popEvent(tio);
+        try t.expectEqual(i + 1, bot_msg.?.direction.idx);
     }
 }
 
@@ -712,9 +758,9 @@ test "drain changes the direction of snakes" {
     dirs[1] = core.setDirection(curr_dirs1, .up);
     dirs[4] = core.setDirection(curr_dirs4, .left);
 
-    try s.queue.push(talloc, .{ .idx = 2, .direction = .down });
-    try s.queue.push(talloc, .{ .idx = 1, .direction = .left });
-    try s.queue.push(talloc, .{ .idx = 4, .direction = .down });
+    try s.queue.push(talloc, .{ .direction = .{ .idx = 2, .direction = .down } });
+    try s.queue.push(talloc, .{ .direction = .{ .idx = 1, .direction = .left } });
+    try s.queue.push(talloc, .{ .direction = .{ .idx = 4, .direction = .down } });
     try s.drain(tio);
 
     try t.expectEqual(.down, snakes.items(.direction)[2]);
@@ -723,23 +769,23 @@ test "drain changes the direction of snakes" {
 }
 
 test "pop message off of queue" {
-    var queue = MessageQueue.init(talloc, 8);
+    var queue = EventQueue.init(talloc, 8);
     defer queue.deinit(talloc);
 
-    try queue.push(talloc, .{ .idx = 2, .direction = .down });
-    try queue.push(talloc, .{ .idx = 1, .direction = .down });
-    try queue.push(talloc, .{ .idx = 4, .direction = .right });
+    try queue.push(talloc, .{ .direction = .{ .idx = 2, .direction = .down } });
+    try queue.push(talloc, .{ .direction = .{ .idx = 1, .direction = .down } });
+    try queue.push(talloc, .{ .direction = .{ .idx = 4, .direction = .right } });
 
-    try t.expectEqual(2, queue.pop().?.idx);
+    try t.expectEqual(2, queue.pop().?.direction.idx);
 }
 
 test "push message to queue" {
-    var queue = MessageQueue.init(talloc, 8);
+    var queue = EventQueue.init(talloc, 8);
     defer queue.deinit(talloc);
 
-    try queue.push(talloc, .{ .idx = 2, .direction = .down }); // 1
-    try queue.push(talloc, .{ .idx = 1, .direction = .down }); // 2
-    try queue.push(talloc, .{ .idx = 4, .direction = .right }); // 3
+    try queue.push(talloc, .{ .direction = .{ .idx = 2, .direction = .down } }); // 1
+    try queue.push(talloc, .{ .direction = .{ .idx = 1, .direction = .down } }); // 2
+    try queue.push(talloc, .{ .direction = .{ .idx = 4, .direction = .right } }); // 3
 
     try t.expectEqual(3, queue.len());
 }
@@ -757,9 +803,9 @@ test "drain messages in queue" {
     try s.game.spawnSnake(talloc, rand);
     try s.game.spawnSnake(talloc, rand);
 
-    try s.queue.push(talloc, .{ .idx = 2, .direction = .down });
-    try s.queue.push(talloc, .{ .idx = 1, .direction = .down });
-    try s.queue.push(talloc, .{ .idx = 4, .direction = .right });
+    try s.queue.push(talloc, .{ .direction = .{ .idx = 2, .direction = .down } });
+    try s.queue.push(talloc, .{ .direction = .{ .idx = 1, .direction = .down } });
+    try s.queue.push(talloc, .{ .direction = .{ .idx = 4, .direction = .right } });
     try s.drain(tio);
 
     try t.expectEqual(0, s.queue.len());
@@ -863,6 +909,77 @@ test "initialization is personalized delivery, not a broadcast" {
     }
 
     try t.expectEqual(std.http.Server.WebSocket.Opcode.text, init_msg.op);
+}
+
+fn applyClientFrame(
+    body: *std.ArrayList(core.Position),
+    frame: OutboundMsg,
+    alloc: std.mem.Allocator,
+) !void {
+    if (frame.op != .binary or frame.data[4] & 0x04 == 0) return;
+    try body.insert(alloc, 0, .{
+        .x = frame.data[6],
+        .y = frame.data[7],
+    });
+}
+
+test "client resynchronizes after an outbound frame is dropped" {
+    var s = try Session.init(talloc);
+    defer s.deinit(tio);
+
+    _ = try s.addClient(talloc, tio);
+    try s.game.snakes.append(
+        talloc,
+        try core.Snake.initAt(talloc, .{ .x = 10, .y = 10 }, .right),
+    );
+    try s.game.snakes.append(
+        talloc,
+        try core.Snake.initAt(talloc, .{ .x = 10, .y = 20 }, .right),
+    );
+
+    const client = s.clients.items[0];
+    var client_body = std.ArrayList(core.Position).empty;
+    defer client_body.deinit(talloc);
+    try client_body.append(talloc, .{ .x = 10, .y = 10 });
+
+    // The client receives the first three frames normally.
+    for (0..3) |_| {
+        try s.tickAndBroadcast(tio);
+        try applyClientFrame(&client_body, try client.outbound.getOne(tio), talloc);
+    }
+
+    // Simulate a slow connection: twelve frames arrive while the client reads none.
+    for (0..12) |_| try s.tickAndBroadcast(tio);
+
+    var pending: [s.clients.items[0].outbound_buf.len]OutboundMsg = undefined;
+    const n = try client.outbound.get(tio, &pending, 0);
+    try t.expectEqual(@as(usize, 10), n);
+
+    for (pending[0..n]) |frame| try applyClientFrame(&client_body, frame, talloc);
+
+    const authoritative_body = s.game.snakes.items(.body)[0].items;
+    try t.expect(authoritative_body.len != client_body.items.len);
+
+    try s.pushEvent(tio, .{ .resync = .{ .idx = 0 } });
+    try s.drain(tio);
+
+    const snapshot_msg = try client.outbound.getOne(tio);
+    try t.expectEqual(std.http.Server.WebSocket.Opcode.text, snapshot_msg.op);
+    const parsed_snapshot = try json.parseFromSlice(
+        OutboundMsg.ResyncMessage,
+        talloc,
+        snapshot_msg.data[0..snapshot_msg.len],
+        .{},
+    );
+    defer parsed_snapshot.deinit();
+
+    try t.expectEqual(OutboundMsg.MsgType.resync, parsed_snapshot.value.kind);
+    try t.expectEqual(s.game.seq, parsed_snapshot.value.sequence);
+    try t.expectEqualSlices(
+        core.Position,
+        authoritative_body,
+        parsed_snapshot.value.snakes[0].body,
+    );
 }
 
 test "finds a lobby that is not full" {

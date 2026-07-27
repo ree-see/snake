@@ -57,10 +57,29 @@ fn readOneInbound(
     idx: usize,
 ) !void {
     const msg = try ws.readSmallMessage();
-    try s.pushMessage(
-        io,
-        .{ .idx = idx, .direction = try core.dirFromKeyPress(msg.data[0]) },
-    );
+    switch (msg.opcode) {
+        .binary => {
+            // FIXME: need to figure out the best way to handle invalid keypress
+            const dir = try core.dirFromKeyPress(msg.data[0]);
+            const evmsg: session.EventQueue.Event = .{
+                .direction = .{ .idx = idx, .direction = dir },
+            };
+            try s.pushEvent(io, evmsg);
+        },
+        .text => {
+            const resync_msg = [_]u8{
+                '{', '"', 'k', 'i', 'n', 'd', '"', ':',
+                '"', 'r', 'e', 's', 'y', 'n', 'c', '"',
+                '}',
+            };
+
+            if (std.mem.eql(u8, msg.data, &resync_msg)) {
+                const evmsg: session.EventQueue.Event = .{ .resync = .{ .idx = idx } };
+                try s.pushEvent(io, evmsg);
+            }
+        },
+        else => {},
+    }
 }
 
 // server > client bytes into ws.output
@@ -94,7 +113,7 @@ test "read a ws msg into the session queue" {
     defer s.deinit(tio);
     var buf: [4096]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
-    var input = [_]u8{ 0x81, 0x81, 0, 0, 0, 0, 'k' };
+    var input = [_]u8{ 0x82, 0x81, 0, 0, 0, 0, 'k' };
     var r = std.Io.Reader.fixed(&input);
     var ws: std.http.Server.WebSocket = .{
         .key = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
@@ -103,8 +122,37 @@ test "read a ws msg into the session queue" {
     };
     try readOneInbound(&s, tio, &ws, 0);
 
-    const expected = session.MessageQueue.Message{ .idx = 0, .direction = .down };
-    const actual = try s.popMessage(tio);
+    const expected = session.EventQueue.Event{
+        .direction = .{ .idx = 0, .direction = .down },
+    };
+    const actual = try s.popEvent(tio);
+
+    try t.expectEqual(expected, actual);
+}
+
+test "read a ws resync msg text into the session queue" {
+    var s = try session.Session.init(talloc);
+    defer s.deinit(tio);
+    var buf: [4096]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    var input: [25]u8 align(4) = .{
+        0x81, 0xfe, 0x00, 0x11, 0,   0,   0,   0,
+        '{',  '"',  'k',  'i',  'n', 'd', '"', ':',
+        '"',  'r',  'e',  's',  'y', 'n', 'c', '"',
+        '}',
+    };
+    var r = std.Io.Reader.fixed(&input);
+    var ws: std.http.Server.WebSocket = .{
+        .key = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+        .input = &r,
+        .output = &w,
+    };
+    try readOneInbound(&s, tio, &ws, 0);
+
+    const expected = session.EventQueue.Event{
+        .resync = .{ .idx = 0 },
+    };
+    const actual = try s.popEvent(tio);
 
     try t.expectEqual(expected, actual);
 }

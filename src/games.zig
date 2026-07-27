@@ -6,7 +6,7 @@ const tio = t.io;
 const talloc = t.allocator;
 
 /// Initial head position for one snake in a client match snapshot.
-pub const SnakeSnapshot = struct {
+pub const InitialSnapshot = struct {
     idx: usize,
     x: u8,
     y: u8,
@@ -17,17 +17,17 @@ pub const SnakeSnapshot = struct {
     pub fn fromTron(
         alloc: std.mem.Allocator,
         game: *const TronGame,
-    ) ![]SnakeSnapshot {
+    ) ![]InitialSnapshot {
         const s = game.snakes.slice();
         const bodies = s.items(.body);
 
-        var buf: std.ArrayList(SnakeSnapshot) = .empty;
+        var buf: std.ArrayList(InitialSnapshot) = .empty;
         errdefer buf.deinit(alloc);
 
         for (bodies, 0..) |body, i| {
             std.debug.assert(body.items.len == 1);
 
-            const snake: SnakeSnapshot = .{
+            const snake: InitialSnapshot = .{
                 .idx = i,
                 .x = body.items[0].x,
                 .y = body.items[0].y,
@@ -36,6 +36,36 @@ pub const SnakeSnapshot = struct {
         }
 
         return try buf.toOwnedSlice(alloc);
+    }
+};
+
+pub const SnakeSnapshot = struct {
+    idx: usize,
+    is_dead: bool,
+    body: []const core.Position,
+
+    pub fn fromTron(
+        alloc: std.mem.Allocator,
+        game: *const TronGame,
+    ) ![]SnakeSnapshot {
+        const s = game.snakes.slice();
+        const bodies = s.items(.body);
+        const is_dead = s.items(.is_dead);
+
+        var buf: std.ArrayList(SnakeSnapshot) = .empty;
+        errdefer buf.deinit(alloc);
+
+        for (bodies, 0..) |body, i| {
+            // var body_buf: [body.items.len]core.Position = undefined;
+            const snake: SnakeSnapshot = .{
+                .idx = i,
+                .is_dead = is_dead[i],
+                .body = body.items,
+            };
+            try buf.append(alloc, snake);
+        }
+
+        return buf.toOwnedSlice(alloc);
     }
 };
 
@@ -145,6 +175,7 @@ pub const TronGame = struct {
     state: GameState,
     snakes: std.MultiArrayList(core.Snake),
     deltas: std.ArrayList(Delta),
+    seq: u32 = 0,
 
     const DeathResult = struct { died: u8, killer: ?u8 };
 
@@ -193,15 +224,16 @@ pub const TronGame = struct {
 
     /// Encodes the current per-snake deltas into caller-provided storage.
     ///
-    /// `buf` must hold `deltas.len * Delta.encoded_len` bytes.
+    /// `buf` must hold `4 + deltas.len * Delta.encoded_len` bytes.
     pub fn encodeDeltas(self: *const TronGame, buf: []u8) []u8 {
-        const needed = self.deltas.items.len * Delta.encoded_len;
+        const needed = 4 + self.deltas.items.len * Delta.encoded_len;
         std.debug.assert(buf.len >= needed);
 
-        var offset: usize = 0;
+        var offset: usize = 4;
+        std.mem.writeInt(u32, buf[0..4], self.seq, .big);
         for (self.deltas.items) |delta| {
             const bytes = delta.encode();
-            @memcpy(buf[offset..][0..bytes.len], &bytes);
+            @memcpy(buf[offset .. offset + 4][0..bytes.len], &bytes);
             offset += bytes.len;
         }
 
@@ -369,6 +401,7 @@ pub const TronGame = struct {
         self.checkSelfCollision();
         self.applyDeaths();
         try self.advanceSnakes(alloc);
+        self.seq += 1;
     }
 };
 
@@ -663,9 +696,11 @@ test "encodeDeltas packs every snake's delta into one flat byte buffer" {
         },
     );
 
-    var buf: [20]u8 = undefined;
+    game.seq = 1;
+    var buf: [24]u8 = undefined;
     _ = game.encodeDeltas(&buf);
-    const expected = [20]u8{
+    const expected = [24]u8{
+        0,    0, 0,  1,
         0x07, 1, 1,  2,
         0x04, 0, 5,  6,
         0x01, 0, 0,  0,

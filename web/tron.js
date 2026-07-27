@@ -1,7 +1,7 @@
 // Tron -- server-authoritative multiplayer client.
 //
 // Unlike snake.js, this file runs NO simulation. The Zig server (see
-// src/session.zig's Session.startGame and src/core.zig's TronGame) owns the
+// src/session.zig's Session.startGame and src/games.zig's TronGame) owns the
 // only authoritative tick. This file has exactly two jobs: send keypresses
 // up over the WebSocket, and render whatever delta the server broadcasts
 // down. See the project's tron-server-authoritative memory for why.
@@ -9,22 +9,8 @@
 const WIDTH = 128; // must match core.GRID_WIDTH
 const HEIGHT = 96; // must match core.GRID_HEIGHT
 const CELL = 8; // px per grid cell (internal resolution; CSS scales it down)
-const N_SNAKES = 5; // must match core.TronGame.n_snakes
-
 // Byte codes core.setDirection expects (i/j/k/l = 105/106/107/108).
 const KEY = { UP: 105, LEFT: 106, DOWN: 107, RIGHT: 108 };
-
-// Fixed spawn layout -- must mirror TronGame.init()'s corner/center placement
-// exactly. The wire protocol only ever sends *deltas* (next head cell +
-// death), never a full snapshot, so the client has to already know where
-// every snake starts and grow its body from there.
-const SPAWN = [
-  { x: 0, y: 0 }, // a: gridCorner(.down)  -> top_left
-  { x: WIDTH - 1, y: HEIGHT - 1 }, // b: gridCorner(.up)    -> bottom_right
-  { x: WIDTH - 1, y: 0 }, // c: gridCorner(.left)  -> top_right
-  { x: 0, y: HEIGHT - 1 }, // d: gridCorner(.right) -> bottom_left
-  { x: Math.floor(WIDTH / 2), y: Math.floor(HEIGHT / 2) }, // e: gridCenter()
-];
 
 const COLORS = ["#56d364", "#f85149", "#58a6ff", "#d29922", "#bc8cff"];
 
@@ -40,11 +26,13 @@ canvas.width = WIDTH * CELL;
 canvas.height = HEIGHT * CELL;
 
 let myIdx = null;
-let gotIdx = false;
+let initialized = false;
 let started = false;
+let lastSequence = 0;
+let resyncPending = false;
 
-const bodies = SPAWN.map((pos) => [pos]); // bodies[i] = [{x,y}, ...], head first
-const dead = new Array(N_SNAKES).fill(false);
+let bodies = []; // bodies[i] = [{x,y}, ...], head first
+let dead = [];
 
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/`);
@@ -61,17 +49,31 @@ function connect() {
     // so `event.data` arrives as a string for text and an ArrayBuffer (per
     // `ws.binaryType`) for binary, regardless of byte length.
     if (typeof event.data === "string") {
-      handleControlMessage(JSON.parse(event.data));
+      const msg = JSON.parse(event.data);
+      if (msg.kind === "init") initializeMatch(msg);
+      else if (msg.kind === "resync") applySnapshot(msg);
+      else handleControlMessage(msg);
       return;
     }
 
     const bytes = new Uint8Array(event.data);
 
-    if (!gotIdx) {
-      // First frame the server ever sends: one byte, your snake index.
-      myIdx = bytes[0];
-      gotIdx = true;
-      setStatus(`you are player ${myIdx + 1}`, COLORS[myIdx]);
+    if (!initialized) {
+      errorEl.textContent = "Received a game frame before match initialization.";
+      return;
+    }
+
+    if (bytes.length !== 4 + bodies.length * 4) {
+      errorEl.textContent = "Received a malformed game frame.";
+      return;
+    }
+
+    const sequence = new DataView(bytes.buffer, bytes.byteOffset, 4)
+      .getUint32(0, false);
+    if (resyncPending) return;
+    if (sequence <= lastSequence) return;
+    if (sequence !== lastSequence + 1) {
+      requestResync(ws);
       return;
     }
 
@@ -81,6 +83,7 @@ function connect() {
     }
 
     applyDeltas(bytes);
+    lastSequence = sequence;
     render();
   };
 
@@ -92,16 +95,101 @@ function connect() {
   wireInput(ws);
 }
 
-// Wire format: 4 bytes per snake, N_SNAKES snakes back to back.
-//   byte 0: header (bit0 has_death, bit1 has_killer, bit2 has_pos)
-//   byte 1: killer snake index (only meaningful if has_killer)
-//   byte 2: next head x       (only meaningful if has_pos)
-//   byte 3: next head y       (only meaningful if has_pos)
+function initializeMatch(msg) {
+  if (!Array.isArray(msg.snakes) || !Number.isInteger(msg.snake_idx)) {
+    errorEl.textContent = "Received an invalid match initialization message.";
+    return;
+  }
+
+  const initialBodies = new Array(msg.snakes.length);
+  for (const snake of msg.snakes) {
+    if (
+      !Number.isInteger(snake.idx) ||
+      snake.idx < 0 ||
+      snake.idx >= initialBodies.length ||
+      !Number.isInteger(snake.x) ||
+      !Number.isInteger(snake.y)
+    ) {
+      errorEl.textContent = "Received an invalid snake snapshot.";
+      return;
+    }
+    initialBodies[snake.idx] = [{ x: snake.x, y: snake.y }];
+  }
+
+  if (
+    initialBodies.some((body) => body === undefined) ||
+    msg.snake_idx < 0 ||
+    msg.snake_idx >= initialBodies.length
+  ) {
+    errorEl.textContent = "Received an incomplete match initialization message.";
+    return;
+  }
+
+  myIdx = msg.snake_idx;
+  bodies = initialBodies;
+  dead = new Array(bodies.length).fill(false);
+  lastSequence = 0;
+  resyncPending = false;
+  initialized = true;
+  setStatus(`you are player ${myIdx + 1}`, COLORS[myIdx]);
+  render();
+}
+
+function applySnapshot(msg) {
+  if (!Number.isInteger(msg.sequence) || !Array.isArray(msg.snakes)) {
+    errorEl.textContent = "Received an invalid resync snapshot.";
+    return;
+  }
+
+  const nextBodies = new Array(msg.snakes.length);
+  const nextDead = new Array(msg.snakes.length);
+  for (const snake of msg.snakes) {
+    if (
+      !Number.isInteger(snake.idx) ||
+      snake.idx < 0 ||
+      snake.idx >= nextBodies.length ||
+      typeof snake.is_dead !== "boolean" ||
+      !Array.isArray(snake.body) ||
+      snake.body.length === 0 ||
+      snake.body.some(
+        (pos) =>
+          !Number.isInteger(pos.x) ||
+          !Number.isInteger(pos.y),
+      )
+    ) {
+      errorEl.textContent = "Received an invalid resync snapshot.";
+      return;
+    }
+    nextBodies[snake.idx] = snake.body.map(({ x, y }) => ({ x, y }));
+    nextDead[snake.idx] = snake.is_dead;
+  }
+
+  if (nextBodies.some((body) => body === undefined)) {
+    errorEl.textContent = "Received an incomplete resync snapshot.";
+    return;
+  }
+
+  bodies = nextBodies;
+  dead = nextDead;
+  lastSequence = msg.sequence;
+  resyncPending = false;
+  render();
+}
+
+function requestResync(ws) {
+  if (resyncPending) return;
+  resyncPending = true;
+  ws.send(JSON.stringify({ kind: "resync" }));
+}
+
+// Wire format: 4-byte big-endian sequence, then 4 bytes per snake.
+// Each delta contains a header (bit0 has_death, bit1 has_killer, bit2 has_pos),
+// followed by killer index, next head x, and next head y.
 // Must mirror core.zig's Delta.encode exactly.
 function applyDeltas(bytes) {
-  for (let i = 0; i < N_SNAKES; i++) {
+  for (let i = 0; i < bodies.length; i++) {
     if (dead[i]) continue;
-    const off = i * 4;
+    const off = 4 + i * 4;
     const header = bytes[off];
     const hasDeath = (header & 0b001) !== 0;
     const hasPos = (header & 0b100) !== 0;
@@ -118,7 +206,7 @@ function render() {
   ctx.fillStyle = "#0d1117";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  for (let i = 0; i < N_SNAKES; i++) drawSnake(i);
+  for (let i = 0; i < bodies.length; i++) drawSnake(i);
 }
 
 function drawSnake(i) {
@@ -145,9 +233,9 @@ function handleControlMessage(msg) {
   }
 
   if (typeof msg.winner === "number") {
-    // winner === N_SNAKES (5) is the server's tie-broadcast sentinel --
+    // winner === snake count is the server's tie-broadcast sentinel --
     // see Session.startGame's dead_count == n_snakes branch in session.zig.
-    const isTie = msg.winner === N_SNAKES;
+    const isTie = msg.winner === bodies.length;
     const isWinner = !isTie && msg.winner === myIdx;
 
     overlayTitle.textContent = isTie ? "draw" : isWinner ? "you won" : "you lost";
