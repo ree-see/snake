@@ -53,6 +53,7 @@ pub fn build(b: *std.Build) void {
     );
     server.root_module.addImport("session", session_mod);
     server.root_module.addImport("core", core_mod);
+    server.root_module.addImport("games", games_mod);
 
     b.installArtifact(server);
 

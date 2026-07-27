@@ -19,15 +19,15 @@ pub const OutboundMsg = struct {
 
     const max_frame_size: usize = 4096;
 
-    const MsgType = enum { init, resync };
+    pub const MsgType = enum { init, resync };
 
-    const InitMessage = struct {
+    pub const InitMessage = struct {
         kind: MsgType,
         snake_idx: usize,
         snakes: []games.InitialSnapshot,
     };
 
-    const ResyncMessage = struct {
+    pub const ResyncMessage = struct {
         kind: MsgType,
         sequence: u32,
         snakes: []games.SnakeSnapshot,
