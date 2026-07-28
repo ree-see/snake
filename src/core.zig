@@ -7,7 +7,7 @@ const talloc = t.allocator;
 /// Number of addressable columns in every game board.
 pub const GRID_WIDTH = 128;
 /// Number of addressable rows in every game board.
-pub const GRID_HEIGHT = 96;
+pub const GRID_HEIGHT = 128;
 
 /// Returns a direction and the opposite corner used for a snake spawn.
 pub fn gridCorner(direction: Snake.Direction) struct { Snake.Direction, Position } {
@@ -94,8 +94,8 @@ pub fn keyPressFromDir(dir: Snake.Direction) u8 {
 }
 /// A grid coordinate shared by native, network, and WASM code.
 pub const Position = extern struct {
-    x: u8,
-    y: u8,
+    x: u16,
+    y: u16,
 };
 
 /// Mutable simulation state for one snake with its head at body index zero.

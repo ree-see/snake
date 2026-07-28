@@ -43,17 +43,17 @@ export fn getSnakePtr() usize {
 }
 
 /// Returns the current Classic score.
-export fn getScore() u8 {
+export fn getScore() u16 {
     return game.score;
 }
 
 /// Returns the food column in the global Classic game.
-export fn getFoodPosX() u32 {
+export fn getFoodPosX() u16 {
     return game.food.pos.x;
 }
 
 /// Returns the food row in the global Classic game.
-export fn getFoodPosY() u32 {
+export fn getFoodPosY() u16 {
     return game.food.pos.y;
 }
 

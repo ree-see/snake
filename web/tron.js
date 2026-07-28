@@ -63,7 +63,7 @@ function connect() {
       return;
     }
 
-    if (bytes.length !== 4 + bodies.length * 4) {
+    if (bytes.length !== 4 + bodies.length * 6) {
       errorEl.textContent = "Received a malformed game frame.";
       return;
     }
@@ -182,14 +182,14 @@ function requestResync(ws) {
   ws.send(JSON.stringify({ kind: "resync" }));
 }
 
-// Wire format: 4-byte big-endian sequence, then 4 bytes per snake.
+// Wire format: 4-byte big-endian sequence, then 6 bytes per snake.
 // Each delta contains a header (bit0 has_death, bit1 has_killer, bit2 has_pos),
-// followed by killer index, next head x, and next head y.
+// followed by killer index, next head x (u16 LE), next head y (u16 LE).
 // Must mirror core.zig's Delta.encode exactly.
 function applyDeltas(bytes) {
   for (let i = 0; i < bodies.length; i++) {
     if (dead[i]) continue;
-    const off = 4 + i * 4;
+    const off = 4 + i * 6;
     const header = bytes[off];
     const hasDeath = (header & 0b001) !== 0;
     const hasPos = (header & 0b100) !== 0;
@@ -197,7 +197,11 @@ function applyDeltas(bytes) {
     // Order matters: draw the crash-site head before freezing the snake, so
     // a snake that dies by colliding still shows exactly where it happened
     // instead of stopping one cell short.
-    if (hasPos) bodies[i].unshift({ x: bytes[off + 2], y: bytes[off + 3] });
+    if (hasPos) {
+      const x = bytes[off + 2] | (bytes[off + 3] << 8);
+      const y = bytes[off + 4] | (bytes[off + 5] << 8);
+      bodies[i].unshift({ x, y });
+    }
     if (hasDeath) dead[i] = true;
   }
 }

@@ -216,7 +216,7 @@ test "protocol integration: init, input, and delta frame" {
     const delta_raw = try client.outbound.getOne(tio);
     try t.expectEqual(std.http.Server.WebSocket.Opcode.binary, delta_raw.op);
 
-    // Verify frame layout: 4-byte sequence + 4 bytes per snake
+    // Verify frame layout: 4-byte sequence + encoded_len bytes per snake
     const expected_len: usize = 4 + s.game.snakes.len * games.Delta.encoded_len;
     try t.expectEqual(expected_len, delta_raw.len);
 
@@ -229,8 +229,12 @@ test "protocol integration: init, input, and delta frame" {
     const head = bodies[0].items[0];
     const hdr = delta_raw.data[4];
     try t.expect(hdr & 0x04 != 0); // has_pos
-    try t.expectEqual(head.x, delta_raw.data[6]);
-    try t.expectEqual(head.y, delta_raw.data[7]);
+    // Delta layout: [0]=hdr, [1]=killer, [2..3]=x u16 LE, [4..5]=y u16 LE  (relative to delta start)
+    const pos_base = 4 + 2; // header + killer
+    const dx = delta_raw.data[pos_base] | (@as(u16, delta_raw.data[pos_base + 1]) << 8);
+    const dy = delta_raw.data[pos_base + 2] | (@as(u16, delta_raw.data[pos_base + 3]) << 8);
+    try t.expectEqual(head.x, dx);
+    try t.expectEqual(head.y, dy);
 }
 
 test "protocol integration: client resync via session event" {

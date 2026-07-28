@@ -456,7 +456,7 @@ pub const Session = struct {
         std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), std.Io.Clock.awake) catch return;
 
         // broadcast next render frame
-        var buf: [24]u8 = undefined;
+        var buf: [256]u8 = undefined;
         const payload = self.game.encodeDeltas(&buf);
         try self.broadcast(io, payload[0..], .binary);
     }

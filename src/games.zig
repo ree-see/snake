@@ -8,8 +8,8 @@ const talloc = t.allocator;
 /// Initial head position for one snake in a client match snapshot.
 pub const InitialSnapshot = struct {
     idx: usize,
-    x: u8,
-    y: u8,
+    x: u16,
+    y: u16,
 
     /// Allocates snapshots for every pre-tick Tron snake.
     ///
@@ -119,7 +119,7 @@ pub const Delta = struct {
     const init: Delta = .{ .death = null, .nextPos = null };
 
     /// Fixed byte width of the binary delta wire format.
-    pub const encoded_len: usize = 4;
+    pub const encoded_len: usize = 6;
     const Header = packed struct {
         has_death: bool,
         has_killer: bool,
@@ -127,11 +127,11 @@ pub const Delta = struct {
         _: u5 = 0,
     };
 
-    /// Encodes flags, killer index, and optional next-head position into four bytes.
+    /// Encodes flags, killer index, and optional next-head position into encoded_len bytes.
     ///
     /// The dead snake index is implied by the delta's position in the frame.
-    pub fn encode(d: Delta) [4]u8 {
-        var payload: [4]u8 = undefined;
+    pub fn encode(d: Delta) [encoded_len]u8 {
+        var payload: [encoded_len]u8 = undefined;
         var header: Header = .{
             .has_death = true,
             .has_killer = true,
@@ -146,12 +146,14 @@ pub const Delta = struct {
         }
         header.has_pos = if (d.nextPos != null) true else false;
 
-        for (0..4) |i| {
+        for (0..6) |i| {
             switch (i) {
                 0 => payload[i] = @bitCast(header),
                 1 => payload[i] = if (header.has_killer) d.death.?.killer.? else 0,
-                2 => payload[i] = if (header.has_pos) d.nextPos.?.x else 0,
-                3 => payload[i] = if (header.has_pos) d.nextPos.?.y else 0,
+                2 => payload[i] = if (header.has_pos) @truncate(d.nextPos.?.x) else 0,
+                3 => payload[i] = if (header.has_pos) @truncate(d.nextPos.?.x >> 8) else 0,
+                4 => payload[i] = if (header.has_pos) @truncate(d.nextPos.?.y) else 0,
+                5 => payload[i] = if (header.has_pos) @truncate(d.nextPos.?.y >> 8) else 0,
                 else => {},
             }
         }
@@ -163,7 +165,7 @@ pub const Delta = struct {
             .death = .{ .died = 1, .killer = 4 },
             .nextPos = .{ .x = 3, .y = 5 },
         };
-        const expected: [4]u8 = .{ 0x07, 4, 3, 5 };
+        const expected: [6]u8 = .{ 0x07, 4, 3, 0, 5, 0 };
 
         const encoded_delta = delta.encode();
         try t.expectEqual(expected, encoded_delta);
@@ -233,7 +235,7 @@ pub const TronGame = struct {
         std.mem.writeInt(u32, buf[0..4], self.seq, .big);
         for (self.deltas.items) |delta| {
             const bytes = delta.encode();
-            @memcpy(buf[offset .. offset + 4][0..bytes.len], &bytes);
+            @memcpy(buf[offset .. offset + 6][0..bytes.len], &bytes);
             offset += bytes.len;
         }
 
@@ -407,7 +409,7 @@ pub const TronGame = struct {
 
 /// Single-player Snake state with food, scoring, and tail removal.
 pub const ClassicGame = struct {
-    score: u8,
+    score: u16,
     state: GameState,
     snake: core.Snake,
     food: Food,
@@ -697,15 +699,18 @@ test "encodeDeltas packs every snake's delta into one flat byte buffer" {
     );
 
     game.seq = 1;
-    var buf: [24]u8 = undefined;
+    var buf: [34]u8 = undefined;
     _ = game.encodeDeltas(&buf);
-    const expected = [24]u8{
-        0,    0, 0,  1,
-        0x07, 1, 1,  2,
-        0x04, 0, 5,  6,
-        0x01, 0, 0,  0,
-        0x00, 0, 0,  0,
-        0x07, 0, 10, 20,
+    const expected = [34]u8{
+        0,    0, 0,    1,
+        0x07, 1, 1,    0,
+        2,    0, 0x04, 0,
+        5,    0, 6,    0,
+        0x01, 0, 0,    0,
+        0,    0, 0x00, 0,
+        0,    0, 0,    0,
+        0x07, 0, 10,   0,
+        20,   0,
     };
 
     try t.expectEqual(expected, buf);
