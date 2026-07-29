@@ -24,13 +24,13 @@ pub const OutboundMsg = struct {
     pub const InitMessage = struct {
         kind: MsgType,
         snake_idx: usize,
-        snakes: []games.InitialSnapshot,
+        snakes: []games.Tron.InitialSnapshot,
     };
 
     pub const ResyncMessage = struct {
         kind: MsgType,
         sequence: u32,
-        snakes: []games.SnakeSnapshot,
+        snakes: []games.Tron.SnakeSnapshot,
     };
 };
 
@@ -250,7 +250,7 @@ pub const Session = struct {
     alloc: std.mem.Allocator,
     mutex: std.Io.Mutex,
     run_group: std.Io.Group,
-    game: games.TronGame,
+    game: games.Tron,
 
     clients: std.ArrayList(*Client),
     bots: std.ArrayList(Bot),
@@ -323,14 +323,14 @@ pub const Session = struct {
                     );
                 },
                 .resync => |m| {
-                    const snakes = try games.SnakeSnapshot.fromTron(
+                    const snakes = try games.Tron.SnakeSnapshot.fromTron(
                         self.alloc,
                         &self.game,
                     );
                     defer self.alloc.free(snakes);
                     const init_msg: OutboundMsg.ResyncMessage = .{
                         .kind = .resync,
-                        .sequence = self.game.seq,
+                        .sequence = self.game.frame_seq,
                         .snakes = snakes,
                     };
                     var outbound: OutboundMsg = .{
@@ -533,7 +533,7 @@ pub const Session = struct {
                 try self.game.spawnSnake(alloc, rand);
             }
 
-            const snapshot = try games.InitialSnapshot.fromTron(alloc, &self.game);
+            const snapshot = try games.Tron.InitialSnapshot.fromTron(alloc, &self.game);
             defer alloc.free(snapshot);
 
             for (self.clients.items) |client| {
@@ -974,7 +974,7 @@ test "client resynchronizes after an outbound frame is dropped" {
     defer parsed_snapshot.deinit();
 
     try t.expectEqual(OutboundMsg.MsgType.resync, parsed_snapshot.value.kind);
-    try t.expectEqual(s.game.seq, parsed_snapshot.value.sequence);
+    try t.expectEqual(s.game.frame_seq, parsed_snapshot.value.sequence);
     try t.expectEqualSlices(
         core.Position,
         authoritative_body,

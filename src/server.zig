@@ -217,7 +217,7 @@ test "protocol integration: init, input, and delta frame" {
     try t.expectEqual(std.http.Server.WebSocket.Opcode.binary, delta_raw.op);
 
     // Verify frame layout: 4-byte sequence + encoded_len bytes per snake
-    const expected_len: usize = 4 + s.game.snakes.len * games.Delta.encoded_len;
+    const expected_len: usize = 4 + s.game.snakes.len * games.Tron.Delta.encoded_len;
     try t.expectEqual(expected_len, delta_raw.len);
 
     // Verify sequence is 1 (first tick after seq=0)
@@ -277,7 +277,7 @@ test "protocol integration: client resync via session event" {
     defer parsed_snapshot.deinit();
 
     try t.expectEqual(session.OutboundMsg.MsgType.resync, parsed_snapshot.value.kind);
-    try t.expectEqual(s.game.seq, parsed_snapshot.value.sequence);
+    try t.expectEqual(s.game.frame_seq, parsed_snapshot.value.sequence);
     try t.expectEqual(s.game.snakes.len, parsed_snapshot.value.snakes.len);
 
     // Verify each snapshot snake matches authoritative state

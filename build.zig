@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
     );
     const games_mod = b.createModule(
         .{
-            .root_source_file = b.path("src/games.zig"),
+            .root_source_file = b.path("src/games/games.zig"),
             .target = target,
             .optimize = optimize,
         },
@@ -40,6 +40,13 @@ pub fn build(b: *std.Build) void {
     session_mod.addImport("core", core_mod);
     session_mod.addImport("games", games_mod);
     session_mod.addImport("bot", bot_mod);
+
+    const br_mod = b.createModule(.{
+        .root_source_file = b.path("src/games/Br.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    br_mod.addImport("core", core_mod);
 
     const server = b.addExecutable(
         .{
@@ -120,11 +127,13 @@ pub fn build(b: *std.Build) void {
         .root_module = server.root_module,
     });
     const games_tests = b.addTest(.{ .root_module = games_mod });
+    const br_tests = b.addTest(.{ .root_module = br_mod });
     const run_server_tests = b.addRunArtifact(server_tests);
     const run_core_tests = b.addRunArtifact(core_tests);
     const run_bot_tests = b.addRunArtifact(bot_tests);
     const run_session_tests = b.addRunArtifact(session_tests);
     const run_games_tests = b.addRunArtifact(games_tests);
+    const run_br_tests = b.addRunArtifact(br_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
@@ -133,4 +142,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_session_tests.step);
     test_step.dependOn(&run_server_tests.step);
     test_step.dependOn(&run_games_tests.step);
+    test_step.dependOn(&run_br_tests.step);
 }

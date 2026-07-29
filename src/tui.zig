@@ -34,7 +34,7 @@ const Grid = struct {
 /// Draws a Classic game into the terminal and clears the scratch grid afterward.
 pub fn render(
     grid: *Grid,
-    game: *games.ClassicGame,
+    game: *games.Classic,
     writer: *std.Io.File.Writer,
 ) !void {
     const stdout = &writer.interface;
@@ -133,7 +133,7 @@ pub fn main(init: std.process.Init) !void {
         stdout.flush() catch {};
     }
 
-    var game = try games.ClassicGame.init(gpa, rand);
+    var game = try games.Classic.init(gpa, rand);
     defer game.deinit(gpa);
     defer _ = debug.deinit();
 

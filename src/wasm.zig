@@ -2,7 +2,7 @@ const std = @import("std");
 const core = @import("core");
 const games = @import("games");
 
-var game: games.ClassicGame = undefined;
+var game: games.Classic = undefined;
 var initialized = false;
 var prng: std.Random.DefaultPrng = undefined;
 
@@ -12,7 +12,7 @@ export fn init(seed: u64) void {
     if (initialized) game.deinit(walloc);
 
     prng = std.Random.DefaultPrng.init(seed);
-    game = games.ClassicGame.init(walloc, prng.random()) catch @panic("OOM error");
+    game = games.Classic.init(walloc, prng.random()) catch @panic("OOM error");
     initialized = true;
 }
 

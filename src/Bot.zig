@@ -15,7 +15,7 @@ const init: Bot = .{
 
 fn isSafe(
     self: *Bot,
-    game_state: *const games.TronGame,
+    game_state: *const games.Tron,
     dir: core.Snake.Direction,
 ) bool {
     const s = game_state.snakes.slice();
@@ -29,7 +29,7 @@ fn isSafe(
 /// Chooses a safe forward or perpendicular turn for the bot's assigned snake.
 pub fn decide(
     self: *Bot,
-    game_state: *const games.TronGame,
+    game_state: *const games.Tron,
 ) ?core.Snake.Direction {
     const s = game_state.snakes.slice();
     const snake = s.get(self.snake_idx);
@@ -60,7 +60,7 @@ pub fn decide(
 }
 
 test "decide returns no input for a dead bot" {
-    var game = games.TronGame.init;
+    var game = games.Tron.init;
     defer game.deinit(talloc);
 
     var snake = try core.Snake.initAt(talloc, .{ .x = 10, .y = 10 }, .right);
@@ -72,7 +72,7 @@ test "decide returns no input for a dead bot" {
 }
 
 test "decide keeps moving forward when the next cell is available" {
-    var game = games.TronGame.init;
+    var game = games.Tron.init;
     defer game.deinit(talloc);
 
     try game.snakes.append(
@@ -86,7 +86,7 @@ test "decide keeps moving forward when the next cell is available" {
 }
 
 test "decide turns vertically moving bots left before right" {
-    var game = games.TronGame.init;
+    var game = games.Tron.init;
     defer game.deinit(talloc);
 
     try game.snakes.append(
@@ -104,7 +104,7 @@ test "decide turns vertically moving bots left before right" {
 }
 
 test "decide uses the remaining perpendicular direction when blocked" {
-    var game = games.TronGame.init;
+    var game = games.Tron.init;
     defer game.deinit(talloc);
 
     try game.snakes.append(
@@ -126,7 +126,7 @@ test "decide uses the remaining perpendicular direction when blocked" {
 }
 
 test "decide returns no input when every direction is blocked" {
-    var game = games.TronGame.init;
+    var game = games.Tron.init;
     defer game.deinit(talloc);
 
     try game.snakes.append(
